@@ -22,8 +22,13 @@ if [ -n "$APP_BUNDLE_PATH" ] && [ ! -d "$APP_BUNDLE_PATH" ] && [ -z "$REQUESTED_
 fi
 
 if [ ! -d "$WORKSPACE_PATH" ]; then
-  ri_log "Workspace not found at $WORKSPACE_PATH" >&2
+  ri_log "Xcode workspace/project not found at $WORKSPACE_PATH" >&2
   exit 3
+fi
+
+XCODE_CONTAINER_FLAG="-workspace"
+if [[ "$WORKSPACE_PATH" == *.xcodeproj ]]; then
+  XCODE_CONTAINER_FLAG="-project"
 fi
 
 if [ -n "$APP_BUNDLE_PATH" ]; then
@@ -123,6 +128,8 @@ fi
 if [ -z "$REQUESTED_SCHEME" ]; then
   if [[ "$WORKSPACE_PATH" == *.xcworkspace ]]; then
     REQUESTED_SCHEME="$(basename "$WORKSPACE_PATH" .xcworkspace)"
+  elif [[ "$WORKSPACE_PATH" == *.xcodeproj ]]; then
+    REQUESTED_SCHEME="$(basename "$WORKSPACE_PATH" .xcodeproj)"
   else
     REQUESTED_SCHEME="$(basename "$WORKSPACE_PATH")"
   fi
@@ -141,6 +148,13 @@ export CN1SS_PREVIEW_DIR="$SCREENSHOT_PREVIEW_DIR"
 
 # Patch scheme env vars to point to our runtime dirs
 SCHEME_FILE="$WORKSPACE_PATH/xcshareddata/xcschemes/$SCHEME.xcscheme"
+if [ ! -f "$SCHEME_FILE" ] && [[ "$WORKSPACE_PATH" == *.xcworkspace ]]; then
+  PROJECT_DIR="$(cd "$(dirname "$WORKSPACE_PATH")" && pwd)"
+  PROJECT_SCHEME_FILE="$PROJECT_DIR/$(basename "$WORKSPACE_PATH" .xcworkspace).xcodeproj/xcshareddata/xcschemes/$SCHEME.xcscheme"
+  if [ -f "$PROJECT_SCHEME_FILE" ]; then
+    SCHEME_FILE="$PROJECT_SCHEME_FILE"
+  fi
+fi
 if [ -f "$SCHEME_FILE" ]; then
   if sed --version >/dev/null 2>&1; then
     # GNU sed
@@ -210,7 +224,7 @@ normalize_destination() {
 auto_select_destination() {
   local show_dest rc=0 best_line="" best_key="" line payload platform id name os priority key part value
   set +e
-  show_dest="$(xcodebuild -workspace "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -showdestinations 2>/dev/null)"
+  show_dest="$(xcodebuild "$XCODE_CONTAINER_FLAG" "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -showdestinations 2>/dev/null)"
   rc=$?
   set -e
 
@@ -356,6 +370,7 @@ fallback_sim_destination() {
 
 
 SIM_DESTINATION="${IOS_SIM_DESTINATION:-}"
+USE_GENERIC_BUILD_DESTINATION="false"
 if [ -z "$SIM_DESTINATION" ]; then
   SELECTED_DESTINATION="$(auto_select_destination || true)"
   if [ -n "${SELECTED_DESTINATION:-}" ]; then
@@ -364,13 +379,13 @@ if [ -z "$SIM_DESTINATION" ]; then
   else
     ri_log "Simulator auto-selection did not return a destination"
     SHOW_DEST_LOG="$ARTIFACTS_DIR/xcodebuild-showdestinations.log"
-    xcodebuild -workspace "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -showdestinations \
+    xcodebuild "$XCODE_CONTAINER_FLAG" "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -showdestinations \
       > "$SHOW_DEST_LOG" 2>&1 || true
     if grep -q "not installed" "$SHOW_DEST_LOG"; then
       if [ "$DOWNLOAD_PLATFORMS" = "true" ]; then
         ri_log "Attempting to download missing iOS platform via xcodebuild -downloadPlatform iOS"
         xcodebuild -downloadPlatform iOS || true
-        xcodebuild -workspace "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -showdestinations \
+        xcodebuild "$XCODE_CONTAINER_FLAG" "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -showdestinations \
           > "$SHOW_DEST_LOG" 2>&1 || true
       else
         ri_log "Destinations report missing platforms. Set XCODE_DOWNLOAD_PLATFORMS=true to attempt auto-download."
@@ -386,14 +401,20 @@ if [ -z "$SIM_DESTINATION" ]; then
   FALLBACK_DESTINATION="$(fallback_sim_destination || true)"
   if [ -n "${FALLBACK_DESTINATION:-}" ]; then
     SIM_DESTINATION="$FALLBACK_DESTINATION"
+    USE_GENERIC_BUILD_DESTINATION="true"
     ri_log "Using fallback simulator destination '$SIM_DESTINATION'"
   else
     SIM_DESTINATION="platform=iOS Simulator,name=iPhone 16"
+    USE_GENERIC_BUILD_DESTINATION="true"
     ri_log "Falling back to default simulator destination '$SIM_DESTINATION'"
   fi
 fi
 
 SIM_DESTINATION="$(normalize_destination "$SIM_DESTINATION")"
+BUILD_DESTINATION="$SIM_DESTINATION"
+if [ "$USE_GENERIC_BUILD_DESTINATION" = "true" ]; then
+  BUILD_DESTINATION="generic/platform=iOS Simulator"
+fi
 
 # Extract UDID and prefer id-only destination to avoid OS/SDK mismatches
 SIM_UDID="$(printf '%s\n' "$SIM_DESTINATION" | sed -n 's/.*id=\([^,]*\).*/\1/p' | tr -d '\r[:space:]')"
@@ -406,7 +427,18 @@ if [ -n "$SIM_UDID" ]; then
   echo "Simulator Boot : $(( (BOOT_END - BOOT_START) * 1000 )) ms" >> "$ARTIFACTS_DIR/ios-test-stats.txt"
   SIM_DESTINATION="id=$SIM_UDID"
 fi
+if [ "$USE_GENERIC_BUILD_DESTINATION" = "true" ]; then
+  ri_log "Building with generic simulator destination '$BUILD_DESTINATION' and running on '$SIM_DESTINATION'"
+else
+  BUILD_DESTINATION="$SIM_DESTINATION"
+fi
 ri_log "Running DeviceRunner on destination '$SIM_DESTINATION'"
+
+HOST_ARCH="$(uname -m 2>/dev/null || echo arm64)"
+case "$HOST_ARCH" in
+  arm64|x86_64) BUILD_ARCH="$HOST_ARCH" ;;
+  *) BUILD_ARCH="arm64" ;;
+esac
 
 DERIVED_DATA_DIR="$SCREENSHOT_TMP_DIR/derived"
 rm -rf "$DERIVED_DATA_DIR"
@@ -414,15 +446,26 @@ BUILD_LOG="$ARTIFACTS_DIR/xcodebuild-build.log"
 
 ri_log "Building simulator app with xcodebuild"
 COMPILE_START=$(date +%s)
-if ! xcodebuild \
-  -workspace "$WORKSPACE_PATH" \
-  -scheme "$SCHEME" \
-  -sdk iphonesimulator \
-  -configuration Debug \
-  -destination "$SIM_DESTINATION" \
-  -destination-timeout 120 \
-  -derivedDataPath "$DERIVED_DATA_DIR" \
-  build | tee "$BUILD_LOG"; then
+XCODE_BUILD_CMD=(
+  xcodebuild
+  "$XCODE_CONTAINER_FLAG" "$WORKSPACE_PATH"
+  -scheme "$SCHEME"
+  -sdk iphonesimulator
+  -configuration Debug
+  -destination "$BUILD_DESTINATION"
+  -destination-timeout 120
+  -derivedDataPath "$DERIVED_DATA_DIR"
+)
+if [ "$USE_GENERIC_BUILD_DESTINATION" = "true" ]; then
+  ri_log "Forcing simulator ARCHS=$BUILD_ARCH for generic build destination"
+  XCODE_BUILD_CMD+=(
+    "ARCHS=$BUILD_ARCH"
+    "ONLY_ACTIVE_ARCH=YES"
+    "EXCLUDED_ARCHS=armv7 armv7s"
+  )
+fi
+XCODE_BUILD_CMD+=(build)
+if ! "${XCODE_BUILD_CMD[@]}" | tee "$BUILD_LOG"; then
   ri_log "STAGE:XCODE_BUILD_FAILED -> See $BUILD_LOG"
   exit 10
 fi
@@ -430,7 +473,7 @@ COMPILE_END=$(date +%s)
 COMPILATION_TIME=$((COMPILE_END - COMPILE_START))
 ri_log "Compilation time: ${COMPILATION_TIME}s"
 
-BUILD_SETTINGS="$(xcodebuild -workspace "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -configuration Debug -showBuildSettings 2>/dev/null || true)"
+BUILD_SETTINGS="$(xcodebuild "$XCODE_CONTAINER_FLAG" "$WORKSPACE_PATH" -scheme "$SCHEME" -sdk iphonesimulator -configuration Debug -showBuildSettings 2>/dev/null || true)"
 TARGET_BUILD_DIR="$(printf '%s\n' "$BUILD_SETTINGS" | awk -F' = ' '/ TARGET_BUILD_DIR /{print $2; exit}')"
 WRAPPER_NAME="$(printf '%s\n' "$BUILD_SETTINGS" | awk -F' = ' '/ WRAPPER_NAME /{print $2; exit}')"
 if [ -z "$WRAPPER_NAME" ]; then
