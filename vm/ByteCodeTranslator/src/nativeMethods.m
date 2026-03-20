@@ -1,8 +1,15 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "cn1_globals.h"
 #include <stdint.h>
 #include <ctype.h>
 #include <assert.h>
 #include <errno.h>
+#include <time.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifndef MAX
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
@@ -1629,6 +1636,169 @@ JAVA_OBJECT java_util_Locale_getOSLanguage___R_java_lang_String(CODENAME_ONE_THR
     return newStringFromCString(threadStateData, "en");
 #endif
 }
+
+#if !defined(__APPLE__) || !defined(__OBJC__)
+static char* cn1_strdup(const char* value) {
+    if (value == NULL) {
+        return NULL;
+    }
+    size_t len = strlen(value);
+    char* out = (char*)malloc(len + 1);
+    if (out != NULL) {
+        memcpy(out, value, len + 1);
+    }
+    return out;
+}
+
+static pthread_mutex_t cn1_timezone_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void cn1_with_timezone(const char* zoneId, void (*func)(void*), void* ctx) {
+    pthread_mutex_lock(&cn1_timezone_mutex);
+    char* original = cn1_strdup(getenv("TZ"));
+    if (zoneId != NULL && strlen(zoneId) > 0) {
+        setenv("TZ", zoneId, 1);
+    } else {
+        unsetenv("TZ");
+    }
+    tzset();
+    func(ctx);
+    if (original != NULL) {
+        setenv("TZ", original, 1);
+        free(original);
+    } else {
+        unsetenv("TZ");
+    }
+    tzset();
+    pthread_mutex_unlock(&cn1_timezone_mutex);
+}
+
+typedef struct {
+    int year;
+    int month;
+    int day;
+    int millis;
+    int result;
+} cn1_timezone_offset_ctx;
+
+static void cn1_compute_timezone_offset(void* data) {
+    cn1_timezone_offset_ctx* ctx = (cn1_timezone_offset_ctx*)data;
+    struct tm utc;
+    memset(&utc, 0, sizeof(utc));
+    utc.tm_year = ctx->year - 1900;
+    utc.tm_mon = ctx->month - 1;
+    utc.tm_mday = ctx->day;
+    utc.tm_hour = ctx->millis / 3600000;
+    utc.tm_min = (ctx->millis / 60000) % 60;
+    utc.tm_sec = (ctx->millis / 1000) % 60;
+    utc.tm_isdst = 0;
+    time_t epoch = timegm(&utc);
+    struct tm resolved;
+    localtime_r(&epoch, &resolved);
+#if defined(__APPLE__) || defined(__USE_MISC)
+    ctx->result = (int)resolved.tm_gmtoff * 1000;
+#else
+    ctx->result = 0;
+#endif
+}
+
+typedef struct {
+    long long millis;
+    int result;
+} cn1_timezone_dst_ctx;
+
+static void cn1_compute_timezone_dst(void* data) {
+    cn1_timezone_dst_ctx* ctx = (cn1_timezone_dst_ctx*)data;
+    time_t epoch = (time_t)(ctx->millis / 1000LL);
+    struct tm resolved;
+    localtime_r(&epoch, &resolved);
+    ctx->result = resolved.tm_isdst > 0 ? JAVA_TRUE : JAVA_FALSE;
+}
+
+typedef struct {
+    int januaryOffset;
+    int julyOffset;
+} cn1_timezone_raw_ctx;
+
+static void cn1_compute_timezone_raw(void* data) {
+    cn1_timezone_raw_ctx* ctx = (cn1_timezone_raw_ctx*)data;
+    time_t now = time(NULL);
+    struct tm sample;
+    localtime_r(&now, &sample);
+    sample.tm_year = 124;
+    sample.tm_mon = 0;
+    sample.tm_mday = 1;
+    sample.tm_hour = 12;
+    sample.tm_min = 0;
+    sample.tm_sec = 0;
+    sample.tm_isdst = -1;
+    time_t january = mktime(&sample);
+    localtime_r(&january, &sample);
+#if defined(__APPLE__) || defined(__USE_MISC)
+    ctx->januaryOffset = (int)sample.tm_gmtoff * 1000;
+#else
+    ctx->januaryOffset = 0;
+#endif
+    sample.tm_year = 124;
+    sample.tm_mon = 6;
+    sample.tm_mday = 1;
+    sample.tm_hour = 12;
+    sample.tm_min = 0;
+    sample.tm_sec = 0;
+    sample.tm_isdst = -1;
+    time_t july = mktime(&sample);
+    localtime_r(&july, &sample);
+#if defined(__APPLE__) || defined(__USE_MISC)
+    ctx->julyOffset = (int)sample.tm_gmtoff * 1000;
+#else
+    ctx->julyOffset = 0;
+#endif
+}
+#endif
+
+#if !defined(__APPLE__) || !defined(__OBJC__)
+JAVA_OBJECT java_util_TimeZone_getTimezoneId___R_java_lang_String(CODENAME_ONE_THREAD_STATE) {
+    time_t now = time(NULL);
+    struct tm localTm;
+    localtime_r(&now, &localTm);
+#if defined(__APPLE__) || defined(__USE_MISC)
+    if (localTm.tm_zone != NULL) {
+        return newStringFromCString(threadStateData, localTm.tm_zone);
+    }
+#endif
+    const char* tz = getenv("TZ");
+    return newStringFromCString(threadStateData, tz == NULL ? "GMT" : tz);
+}
+
+JAVA_INT java_util_TimeZone_getTimezoneOffset___java_lang_String_int_int_int_int_R_int(CODENAME_ONE_THREAD_STATE, JAVA_OBJECT name, JAVA_INT year, JAVA_INT month, JAVA_INT day, JAVA_INT timeOfDayMillis) {
+    const char* buffer = stringToUTF8(threadStateData, name);
+    cn1_timezone_offset_ctx ctx;
+    ctx.year = year;
+    ctx.month = month;
+    ctx.day = day;
+    ctx.millis = timeOfDayMillis;
+    ctx.result = 0;
+    cn1_with_timezone(buffer, cn1_compute_timezone_offset, &ctx);
+    return ctx.result;
+}
+
+JAVA_INT java_util_TimeZone_getTimezoneRawOffset___java_lang_String_R_int(CODENAME_ONE_THREAD_STATE, JAVA_OBJECT name) {
+    const char* buffer = stringToUTF8(threadStateData, name);
+    cn1_timezone_raw_ctx ctx;
+    ctx.januaryOffset = 0;
+    ctx.julyOffset = 0;
+    cn1_with_timezone(buffer, cn1_compute_timezone_raw, &ctx);
+    return abs(ctx.januaryOffset) <= abs(ctx.julyOffset) ? ctx.januaryOffset : ctx.julyOffset;
+}
+
+JAVA_BOOLEAN java_util_TimeZone_isTimezoneDST___java_lang_String_long_R_boolean(CODENAME_ONE_THREAD_STATE, JAVA_OBJECT name, JAVA_LONG millis) {
+    const char* buffer = stringToUTF8(threadStateData, name);
+    cn1_timezone_dst_ctx ctx;
+    ctx.millis = millis;
+    ctx.result = JAVA_FALSE;
+    cn1_with_timezone(buffer, cn1_compute_timezone_dst, &ctx);
+    return ctx.result;
+}
+#endif
 
 /*JAVA_OBJECT java_util_Locale_getOSCountry___R_java_lang_String(CODENAME_ONE_THREAD_STATE) {
 }*/
