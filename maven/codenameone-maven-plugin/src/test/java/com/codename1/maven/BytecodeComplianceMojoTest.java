@@ -25,9 +25,13 @@ class BytecodeComplianceMojoTest {
         Files.createDirectories(outputDir);
 
         writeClass(outputDir, "app/Caller", "forbidden/Api", "m", "()V");
+        Path runtimeDir = tempDir.resolve("runtime");
+        Files.createDirectories(runtimeDir);
+        writeJavaLangObject(runtimeDir);
 
         BytecodeComplianceMojo mojo = new BytecodeComplianceMojo();
-        List<?> violations = scanProjectClasses(mojo, outputDir, Collections.<String, Object>emptyMap(), Collections.<String, Object>emptyMap());
+        Map<String, ?> runtimeIndex = buildClassIndex(mojo, Collections.singletonList(runtimeDir.toFile()));
+        List<?> violations = scanProjectClasses(mojo, outputDir, runtimeIndex, Collections.<String, Object>emptyMap());
 
         assertEquals(1, violations.size());
         Object violation = violations.get(0);
@@ -45,6 +49,7 @@ class BytecodeComplianceMojoTest {
 
         writeClass(outputDir, "app/Caller", "allowed/Api", "m", "()V");
         writeApiClass(allowedDir, "allowed/Api", "m", "()V");
+        writeJavaLangObject(allowedDir);
 
         BytecodeComplianceMojo mojo = new BytecodeComplianceMojo();
         Map<String, ?> allowedIndex = buildClassIndex(mojo, Collections.singletonList(allowedDir.toFile()));
@@ -62,6 +67,7 @@ class BytecodeComplianceMojoTest {
 
         writeClass(outputDir, "app/Caller", "dep/Helper", "ok", "()V");
         writeApiClass(dependencyDir, "dep/Helper", "ok", "()V");
+        writeJavaLangObject(dependencyDir);
 
         BytecodeComplianceMojo mojo = new BytecodeComplianceMojo();
         Map<String, ?> dependencyIndex = buildClassIndex(mojo, Collections.singletonList(dependencyDir.toFile()));
@@ -133,6 +139,21 @@ class BytecodeComplianceMojoTest {
 
         writer.visitEnd();
         writeBytes(root, className, writer.toByteArray());
+    }
+
+
+    private void writeJavaLangObject(Path root) throws Exception {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, "java/lang/Object", null, null, null);
+
+        MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        init.visitCode();
+        init.visitInsn(Opcodes.RETURN);
+        init.visitMaxs(0, 1);
+        init.visitEnd();
+
+        writer.visitEnd();
+        writeBytes(root, "java/lang/Object", writer.toByteArray());
     }
 
     private void writeBytes(Path root, String className, byte[] bytes) throws Exception {
