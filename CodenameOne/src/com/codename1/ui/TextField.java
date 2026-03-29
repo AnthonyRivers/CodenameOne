@@ -88,7 +88,7 @@ import java.util.Vector;
 /// The following code demonstrates a more advanced search widget where the data is narrowed as we type
 /// directly into the title area search. Notice that the `TextField` and its hint are styled to look like the title.
 ///
-/// ```java
+/// ```text
 /// Toolbar.setGlobalToolbar(true);
 /// Style s = UIManager.getInstance().getComponentStyle("Title");
 ///

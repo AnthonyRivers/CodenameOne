@@ -80,7 +80,7 @@ import java.util.Map;
 /// This sample code shows the usage of the nestoria API to fill out an infinitely scrolling list in it
 /// we use `URLImage` to fetch the icon.
 ///
-/// ```java
+/// ```text
 /// public void showForm() {
 ///     Form hi = new Form("InfiniteScrollAdapter", new BoxLayout(BoxLayout.Y_AXIS));
 ///

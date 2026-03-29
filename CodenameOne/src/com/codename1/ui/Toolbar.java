@@ -51,7 +51,7 @@ import java.util.Vector;
 /// The Toolbar allows placing components in one of 4 positions as illustrated by
 /// the sample below:
 ///
-/// ```java
+/// ```text
 /// Toolbar.setGlobalToolbar(true);
 ///
 /// Form hi = new Form("Toolbar", new BoxLayout(BoxLayout.Y_AXIS));
@@ -133,7 +133,7 @@ import java.util.Vector;
 /// support above. Notice that the `TextField` and its hint are styled to
 /// look like the title.
 ///
-/// ```java
+/// ```text
 /// Toolbar.setGlobalToolbar(true);
 /// Style s = UIManager.getInstance().getComponentStyle("Title");
 ///
@@ -171,7 +171,7 @@ import java.util.Vector;
 /// potentially shrink) as the user scrolls down the UI. The 3 frames below show
 /// a step by step process in the change.
 ///
-/// ```java
+/// ```text
 /// Toolbar.setGlobalToolbar(true);
 ///
 /// Form hi = new Form("Toolbar", new BoxLayout(BoxLayout.Y_AXIS));

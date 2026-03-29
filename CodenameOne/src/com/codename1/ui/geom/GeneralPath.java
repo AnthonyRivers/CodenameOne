@@ -51,7 +51,7 @@ import java.util.Arrays;
 /// intersection 'down') Point C in the image is inside (two intersections in the
 /// 'down' direction)
 ///
-/// ```java
+/// ```text
 /// Form hi = new Form("Shape");
 ///
 /// // We create a 50 x 100 shape, this is arbitrary since we can scale it easily

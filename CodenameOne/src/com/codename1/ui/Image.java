@@ -415,7 +415,7 @@ public class Image implements ActionSource {
     ///
     /// Code example:
     ///
-    /// ```java
+    /// ```text
     /// Form hi = new Form("Hi World", BoxLayout.y());
     /// Button cameraBtn = new Button("Open Camera");
     /// Button galleryBtn = new Button("Open Gallery");
@@ -483,7 +483,7 @@ public class Image implements ActionSource {
     ///
     /// Code example:
     ///
-    /// ```java
+    /// ```text
     /// Form hi = new Form("Hi World", BoxLayout.y());
     /// Button cameraBtn = new Button("Open Camera");
     /// Button galleryBtn = new Button("Open Gallery");
@@ -560,7 +560,7 @@ public class Image implements ActionSource {
     ///
     /// Code example:
     ///
-    /// ```java
+    /// ```text
     /// Form hi = new Form("Hi World", BoxLayout.y());
     /// Button cameraBtn = new Button("Open Camera");
     /// Button galleryBtn = new Button("Open Gallery");

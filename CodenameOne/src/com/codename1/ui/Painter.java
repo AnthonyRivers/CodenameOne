@@ -31,7 +31,7 @@ import com.codename1.ui.geom.Rectangle;
 ///
 /// A simple example of a background painter is shown here to draw a circle background:
 ///
-/// ```java
+/// ```text
 /// Painter p = new Painter(cmp) {
 ///     public void paint(Graphics g, Rectangle rect) {
 ///         boolean antiAliased = g.isAntiAliased();

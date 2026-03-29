@@ -27,7 +27,7 @@ import com.codename1.ui.Transform;
 /// An interface that can be implemented by any class that wants to be drawable
 /// as a shape.
 ///
-/// ```java
+/// ```text
 /// Form hi = new Form("Shape");
 ///
 /// // We create a 50 x 100 shape, this is arbitrary since we can scale it easily
@@ -56,7 +56,7 @@ import com.codename1.ui.Transform;
 ///
 /// Shape can also be used to clip an area e.g.:
 ///
-/// ```java
+/// ```text
 /// Image duke = null;
 /// try {
 ///     // duke.png is just the default Codename One icon copied into place
