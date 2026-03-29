@@ -18,12 +18,30 @@ public final class JdkApiRewriteHelper {
         if (regex == null) {
             throw new NullPointerException("regex is null");
         }
-        try {
-            return java.util.regex.Pattern.compile(regex).split(source, limit);
-        } catch (Throwable ex) {
-            // Fallback for incomplete regex support on some legacy targets.
-            java.util.List<String> out = com.codename1.util.StringUtil.tokenize(source, regex);
-            return out.toArray(new String[out.size()]);
+        if (regex.length() == 0) {
+            return new String[]{source};
         }
+        java.util.Vector<String> out = new java.util.Vector<String>();
+        int start = 0;
+        int match;
+        while ((match = source.indexOf(regex, start)) >= 0) {
+            if (limit > 0 && out.size() == limit - 1) {
+                break;
+            }
+            out.addElement(source.substring(start, match));
+            start = match + regex.length();
+        }
+        out.addElement(source.substring(start));
+        int resultSize = out.size();
+        if (limit == 0) {
+            while (resultSize > 0 && out.elementAt(resultSize - 1).length() == 0) {
+                resultSize--;
+            }
+        }
+        String[] result = new String[resultSize];
+        for (int i = 0; i < resultSize; i++) {
+            result[i] = out.elementAt(i);
+        }
+        return result;
     }
 }
