@@ -104,7 +104,7 @@ class BytecodeComplianceMojoTest {
     void rewritesClassMajorVersionAboveJava17(@TempDir Path tempDir) throws Exception {
         Path outputDir = tempDir.resolve("classes");
         Files.createDirectories(outputDir);
-        Path classFile = writeClassWithVersion(outputDir, "app/TooNew", Opcodes.V18);
+        Path classFile = writeClassWithVersion(outputDir, "app/TooNew", Opcodes.V17 + 1);
 
         BytecodeComplianceMojo mojo = new BytecodeComplianceMojo();
         int rewritten = enforceMaxClassVersion(mojo, outputDir.toFile(), Opcodes.V17);
