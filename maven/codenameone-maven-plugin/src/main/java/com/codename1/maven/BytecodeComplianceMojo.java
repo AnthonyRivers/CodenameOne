@@ -436,23 +436,17 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
             if (isArrayDescriptor(owner)) {
                 return true;
             }
-            if (resolveMember(owner, memberKey(name, descriptor), true, projectAndDependencyIndex)) {
-                return true;
-            }
-            return resolveMember(owner, memberKey(name, descriptor), true, allowedIndex);
+            return resolveMember(owner, memberKey(name, descriptor), true);
         }
 
         private boolean shouldAllowField(String owner, String name, String descriptor) {
             if (isArrayDescriptor(owner)) {
                 return true;
             }
-            if (resolveMember(owner, memberKey(name, descriptor), false, projectAndDependencyIndex)) {
-                return true;
-            }
-            return resolveMember(owner, memberKey(name, descriptor), false, allowedIndex);
+            return resolveMember(owner, memberKey(name, descriptor), false);
         }
 
-        private boolean resolveMember(String owner, String member, boolean method, Map<String, ClassMetadata> index) {
+        private boolean resolveMember(String owner, String member, boolean method) {
             if (owner == null || owner.isEmpty()) {
                 return false;
             }
@@ -464,7 +458,10 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
                 if (!seen.add(current)) {
                     continue;
                 }
-                ClassMetadata metadata = index.get(current);
+                ClassMetadata metadata = projectAndDependencyIndex.get(current);
+                if (metadata == null) {
+                    metadata = allowedIndex.get(current);
+                }
                 if (metadata == null) {
                     continue;
                 }

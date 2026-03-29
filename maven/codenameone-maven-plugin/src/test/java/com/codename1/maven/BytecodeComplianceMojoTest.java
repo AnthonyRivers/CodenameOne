@@ -76,6 +76,29 @@ class BytecodeComplianceMojoTest {
         assertTrue(violations.isEmpty(), "Expected no violations when method exists in project/dependency index");
     }
 
+
+    @Test
+    void allowsInheritedMethodAcrossProjectAndAllowedIndexes(@TempDir Path tempDir) throws Exception {
+        Path outputDir = tempDir.resolve("classes");
+        Path allowedDir = tempDir.resolve("allowed");
+        Path dependencyDir = tempDir.resolve("dependency");
+        Files.createDirectories(outputDir);
+        Files.createDirectories(allowedDir);
+        Files.createDirectories(dependencyDir);
+
+        writeClass(outputDir, "app/Caller", "dep/Sub", "inherited", "()V");
+        writeApiClass(allowedDir, "allowed/Base", "inherited", "()V");
+        writeJavaLangObject(allowedDir);
+        writeSubclass(dependencyDir, "dep/Sub", "allowed/Base");
+
+        BytecodeComplianceMojo mojo = new BytecodeComplianceMojo();
+        Map<String, ?> allowedIndex = buildClassIndex(mojo, Collections.singletonList(allowedDir.toFile()));
+        Map<String, ?> dependencyIndex = buildClassIndex(mojo, Collections.singletonList(dependencyDir.toFile()));
+
+        List<?> violations = scanProjectClasses(mojo, outputDir, allowedIndex, dependencyIndex);
+        assertTrue(violations.isEmpty(), "Expected no violations when owner inherits allowed member through superclass in allowed index");
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, ?> buildClassIndex(BytecodeComplianceMojo mojo, List<java.io.File> roots) throws Exception {
         Method method = BytecodeComplianceMojo.class.getDeclaredMethod("buildClassIndex", List.class);
@@ -114,6 +137,23 @@ class BytecodeComplianceMojoTest {
         run.visitInsn(Opcodes.RETURN);
         run.visitMaxs(0, 1);
         run.visitEnd();
+
+        writer.visitEnd();
+        writeBytes(root, className, writer.toByteArray());
+    }
+
+
+    private void writeSubclass(Path root, String className, String superName) throws Exception {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, className, null, superName, null);
+
+        MethodVisitor init = writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        init.visitCode();
+        init.visitVarInsn(Opcodes.ALOAD, 0);
+        init.visitMethodInsn(Opcodes.INVOKESPECIAL, superName, "<init>", "()V", false);
+        init.visitInsn(Opcodes.RETURN);
+        init.visitMaxs(1, 1);
+        init.visitEnd();
 
         writer.visitEnd();
         writeBytes(root, className, writer.toByteArray());
