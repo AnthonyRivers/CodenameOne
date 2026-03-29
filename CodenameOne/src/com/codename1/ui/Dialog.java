@@ -23,6 +23,7 @@
  */
 package com.codename1.ui;
 
+import com.codename1.components.InteractionDialog;
 import com.codename1.io.Log;
 import com.codename1.ui.animations.Transition;
 import com.codename1.ui.events.ActionEvent;
@@ -57,6 +58,9 @@ import java.util.Map;
 ///
 /// The `Dialog` class also includes support for popup dialog which is a dialog type that is positioned
 /// next to a component or screen area and points an arrow at that location.
+///
+/// Static `Dialog.show(...)` APIs can optionally use `InteractionDialog` under the hood by setting
+/// `Dialog#setDefaultInteractionDialogMode(boolean)` or the theme constant `defaultInteractionDialogModeBool`.
 ///
 /// Typical dialog usage looks like this:
 ///
@@ -99,7 +103,7 @@ import java.util.Map;
 /// #### See also
 ///
 /// - Display#invokeAndBlock(java.lang.Runnable)
-public class Dialog extends Form {
+public class Dialog extends Form implements AbstractDialog {
 
     /// Constant indicating the type of alert to indicate the sound to play or
     /// icon if none are explicitly set
@@ -147,6 +151,8 @@ public class Dialog extends Form {
     /// blur. -1 is a special case value that indicates that no blurring should take effect and the default tint mode
     /// only should be used
     private static float defaultBlurBackgroundRadius = -1;
+    private static boolean defaultInteractionDialogMode;
+    private static boolean defaultInteractionDialogModeInitialized;
     /// Indicates whether the dialog has been disposed
     private boolean disposed;
     /// Indicates the time in which the alert should be disposed
@@ -188,6 +194,7 @@ public class Dialog extends Form {
     /// only should be used
     private float blurBackgroundRadius = defaultBlurBackgroundRadius;
     private boolean isUIIDByPopupPosition;
+    private boolean interactionDialogMode = defaultInteractionDialogMode;
 
     /// Constructs a Dialog with a title
     ///
@@ -603,29 +610,11 @@ public class Dialog extends Form {
     ///
     /// the command pressed by the user
     public static Command show(String title, Component body, Command defaultCommand, Command[] cmds, int type, Image icon, long timeout, Transition transition) {
-        Dialog dialog = new Dialog(title);
-        dialog.dialogType = type;
-        dialog.setTransitionInAnimator(transition);
-        dialog.setTransitionOutAnimator(transition);
-        dialog.lastCommandPressed = null;
-        dialog.setLayout(new BorderLayout());
-        if (cmds != null) {
-            if (commandsAsButtons) {
-                dialog.placeButtonCommands(cmds);
-            } else {
-                for (Command cmd : cmds) {
-                    dialog.addCommand(cmd);
-                }
-            }
-
-            // maps the first command to back
-            if (cmds.length == 1 || cmds.length == 2) {
-                dialog.setBackCommand(cmds[0]);
-            }
-        }
-        if (defaultCommand != null) {
-            dialog.setDefaultCommand(defaultCommand);
-        }
+        AbstractDialog dialog = isDefaultInteractionDialogMode() ? new InteractionDialog(title, new BorderLayout()) : new Dialog(title);
+        dialog.setDialogType(type);
+        dialog.setTransitions(transition);
+        dialog.configureCommands(cmds, commandsAsButtons);
+        dialog.setDefaultCommand(defaultCommand);
         dialog.addComponent(BorderLayout.CENTER, body);
         if (icon != null) {
             dialog.addComponent(BorderLayout.EAST, new Label(icon));
@@ -636,8 +625,7 @@ public class Dialog extends Form {
         if (body.isScrollable() || disableStaticDialogScrolling) {
             dialog.setScrollable(false);
         }
-        dialog.show();
-        return dialog.lastCommandPressed;
+        return dialog.showDialog();
     }
 
     /// Default screen orientation position for the upcoming dialog. By default
@@ -770,6 +758,41 @@ public class Dialog extends Form {
     /// - `aDefaultBlurBackgroundRadius`: the defaultBlurBackgroundRadius to set
     public static void setDefaultBlurBackgroundRadius(float aDefaultBlurBackgroundRadius) {
         defaultBlurBackgroundRadius = aDefaultBlurBackgroundRadius;
+    }
+
+    private static void initDefaultInteractionDialogMode() {
+        if (!defaultInteractionDialogModeInitialized) {
+            defaultInteractionDialogModeInitialized = true;
+            defaultInteractionDialogMode = UIManager.getInstance().isThemeConstant("defaultInteractionDialogModeBool", defaultInteractionDialogMode);
+        }
+    }
+
+    /// Indicates whether newly-created dialogs should use `InteractionDialog` under the hood.
+    ///
+    /// This default can be configured globally using the theme constant
+    /// `defaultInteractionDialogModeBool`.
+    public static boolean isDefaultInteractionDialogMode() {
+        initDefaultInteractionDialogMode();
+        return defaultInteractionDialogMode;
+    }
+
+    /// Indicates whether newly-created dialogs should use `InteractionDialog` under the hood.
+    ///
+    /// This value overrides the theme constant `defaultInteractionDialogModeBool`
+    /// for the remainder of the app lifecycle.
+    public static void setDefaultInteractionDialogMode(boolean defaultInteractionDialogMode) {
+        defaultInteractionDialogModeInitialized = true;
+        Dialog.defaultInteractionDialogMode = defaultInteractionDialogMode;
+    }
+
+    /// Indicates whether this dialog should use `InteractionDialog` under the hood.
+    public boolean isInteractionDialogMode() {
+        return interactionDialogMode;
+    }
+
+    /// Indicates whether this dialog should use `InteractionDialog` under the hood.
+    public void setInteractionDialogMode(boolean interactionDialogMode) {
+        this.interactionDialogMode = interactionDialogMode;
     }
 
     /// Disabling ad padding for dialogs
@@ -1157,6 +1180,34 @@ public class Dialog extends Form {
     public void setTimeout(long time) {
         this.time = System.currentTimeMillis() + time;
         super.registerAnimatedInternal(this);
+    }
+
+    /// {@inheritDoc}
+    public void setDialogType(int dialogType) {
+        this.dialogType = dialogType;
+    }
+
+    /// {@inheritDoc}
+    public void setTransitions(Transition transition) {
+        setTransitionInAnimator(transition);
+        setTransitionOutAnimator(transition);
+    }
+
+    /// {@inheritDoc}
+    public void configureCommands(Command[] cmds, boolean commandsAsButtons) {
+        if (cmds == null) {
+            return;
+        }
+        if (commandsAsButtons) {
+            placeButtonCommands(cmds);
+        } else {
+            for (Command cmd : cmds) {
+                addCommand(cmd);
+            }
+        }
+        if (cmds.length == 1 || cmds.length == 2) {
+            setBackCommand(cmds[0]);
+        }
     }
 
     /// {@inheritDoc}

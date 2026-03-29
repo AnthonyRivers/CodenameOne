@@ -24,6 +24,9 @@
 package com.codename1.components;
 
 import com.codename1.ui.CN;
+import com.codename1.ui.AbstractDialog;
+import com.codename1.ui.Button;
+import com.codename1.ui.Command;
 import com.codename1.ui.Component;
 import com.codename1.ui.Container;
 import com.codename1.ui.Display;
@@ -35,11 +38,15 @@ import com.codename1.ui.events.ActionListener;
 import com.codename1.ui.geom.Dimension;
 import com.codename1.ui.geom.Rectangle;
 import com.codename1.ui.layouts.BorderLayout;
+import com.codename1.ui.layouts.FlowLayout;
+import com.codename1.ui.layouts.GridLayout;
 import com.codename1.ui.layouts.LayeredLayout;
 import com.codename1.ui.layouts.Layout;
 import com.codename1.ui.plaf.Border;
 import com.codename1.ui.plaf.Style;
 import com.codename1.ui.plaf.UIManager;
+import com.codename1.ui.animations.Transition;
+import com.codename1.ui.util.UITimer;
 
 /// Unlike a regular dialog the interaction dialog only looks like a dialog,
 /// it resides in the layered pane and can be used to implement features where
@@ -60,7 +67,7 @@ import com.codename1.ui.plaf.UIManager;
 /// ```
 ///
 /// @author Shai Almog
-public class InteractionDialog extends Container {
+public class InteractionDialog extends Container implements AbstractDialog {
     private final Label title = new Label();
     private final Container titleArea = new Container(new BorderLayout());
     private final Container contentPane;
@@ -74,6 +81,8 @@ public class InteractionDialog extends Container {
     private boolean pressedOutOfBounds;
     private ActionListener pressedListener;
     private ActionListener releasedListener;
+    private Command lastCommandPressed;
+    private int dialogType;
 
     /// Default constructor with no title
     public InteractionDialog() {
@@ -913,5 +922,83 @@ public class InteractionDialog extends Container {
     /// - `formMode`: the formMode to set
     public void setFormMode(boolean formMode) {
         this.formMode = formMode;
+    }
+
+    /// {@inheritDoc}
+    public void setDialogType(int dialogType) {
+        this.dialogType = dialogType;
+    }
+
+    /// {@inheritDoc}
+    public void setTransitions(Transition transition) {
+    }
+
+    /// {@inheritDoc}
+    public void configureCommands(Command[] cmds, boolean commandsAsButtons) {
+        if (cmds == null || cmds.length == 0) {
+            return;
+        }
+        Container buttonArea;
+        if (UIManager.getInstance().isThemeConstant("dlgCommandGridBool", false)) {
+            buttonArea = new Container(new GridLayout(1, cmds.length));
+        } else {
+            buttonArea = new Container(new FlowLayout(CENTER));
+        }
+        buttonArea.setUIID("DialogCommandArea");
+        String uiid = UIManager.getInstance().getThemeConstant("dlgButtonCommandUIID", null);
+        for (int iter = 0; iter < cmds.length; iter++) {
+            final Command command = cmds[iter];
+            Button b = new Button(command);
+            if (uiid != null) {
+                b.setUIID(uiid);
+            }
+            b.addActionListener(new ActionListener<ActionEvent>() {
+                public void actionPerformed(ActionEvent evt) {
+                    lastCommandPressed = command;
+                    dispose();
+                }
+            });
+            buttonArea.addComponent(b);
+        }
+        getContentPane().addComponent(BorderLayout.SOUTH, buttonArea);
+    }
+
+    /// {@inheritDoc}
+    public void setDefaultCommand(Command defaultCommand) {
+    }
+
+    /// {@inheritDoc}
+    public void setTimeout(long timeout) {
+        if (timeout <= 0) {
+            return;
+        }
+        UITimer.timer((int) timeout, false, Display.getInstance().getCurrent(), new Runnable() {
+            public void run() {
+                dispose();
+            }
+        });
+    }
+
+    /// Shows this interaction dialog and blocks until it is disposed.
+    public Command showDialog() {
+        if (dialogType > 0) {
+            Display.getInstance().playDialogSound(dialogType);
+        }
+        int width = Display.getInstance().getDisplayWidth();
+        int height = Display.getInstance().getDisplayHeight();
+        revalidate();
+        int prefWidth = Math.min(width, getPreferredW());
+        int prefHeight = Math.min(height, getPreferredH());
+        int leftRight = Math.max(0, (width - prefWidth) / 2);
+        int topBottom = Math.max(0, (height - prefHeight) / 2);
+        show(topBottom, topBottom, leftRight, leftRight);
+        while (isShowing()) {
+            CN.invokeAndBlock(new Runnable() {
+                public void run() {
+                    com.codename1.io.Util.sleep(10);
+                }
+            });
+        }
+        return lastCommandPressed;
     }
 }

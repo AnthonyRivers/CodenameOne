@@ -205,6 +205,9 @@
 ///
 /// ![](https://www.codenameone.com/img/developer-guide/components-interaction-dialog.png)
 /// `com.codename1.components.InteractionDialog` an "always on top" `com.codename1.ui.Dialog`
+/// used for non-form modal UI patterns. You can make static `Dialog.show(...)` use
+/// `InteractionDialog` by default with the theme constant `defaultInteractionDialogModeBool`
+/// or via `com.codename1.ui.Dialog#setDefaultInteractionDialogMode(boolean)`.
 ///
 ///
 /// ### MediaPlayer

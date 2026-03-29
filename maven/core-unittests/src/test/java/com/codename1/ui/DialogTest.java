@@ -95,6 +95,7 @@ class DialogTest extends UITestBase {
         boolean originalCommandsAsButtons = Dialog.isCommandsAsButtons();
         boolean originalDispose = Dialog.isDefaultDisposeWhenPointerOutOfBounds();
         float originalBlurRadius = Dialog.getDefaultBlurBackgroundRadius();
+        boolean originalInteractionMode = Dialog.isDefaultInteractionDialogMode();
 
         try {
             Dialog.setAutoAdjustDialogSize(false);
@@ -103,6 +104,7 @@ class DialogTest extends UITestBase {
             Dialog.setCommandsAsButtons(false);
             Dialog.setDefaultDisposeWhenPointerOutOfBounds(true);
             Dialog.setDefaultBlurBackgroundRadius(4.5f);
+            Dialog.setDefaultInteractionDialogMode(true);
 
             Dialog dialog = new Dialog("Configured", new BorderLayout());
             dialog.getContentPane().addComponent(BorderLayout.CENTER, new Label("Body"));
@@ -114,6 +116,7 @@ class DialogTest extends UITestBase {
             assertEquals(BorderLayout.SOUTH, dialog.getDialogPosition());
             assertTrue(dialog.isDisposeWhenPointerOutOfBounds());
             assertEquals(4.5f, dialog.getBlurBackgroundRadius(), 0.01f);
+            assertTrue(dialog.isInteractionDialogMode());
         } finally {
             Dialog.setAutoAdjustDialogSize(originalAutoAdjust);
             Dialog.setDefaultDialogPosition(originalPosition);
@@ -121,6 +124,20 @@ class DialogTest extends UITestBase {
             Dialog.setCommandsAsButtons(originalCommandsAsButtons);
             Dialog.setDefaultDisposeWhenPointerOutOfBounds(originalDispose);
             Dialog.setDefaultBlurBackgroundRadius(originalBlurRadius);
+            Dialog.setDefaultInteractionDialogMode(originalInteractionMode);
+        }
+    }
+
+    @FormTest
+    void staticShowSupportsInteractionDialogMode() {
+        implementation.setBuiltinSoundsEnabled(false);
+        boolean originalMode = Dialog.isDefaultInteractionDialogMode();
+        try {
+            Dialog.setDefaultInteractionDialogMode(true);
+            Command result = Dialog.show("Interaction", "Body", new Command[0], Dialog.TYPE_INFO, null, 10);
+            assertNull(result, "Timeout without commands should return null");
+        } finally {
+            Dialog.setDefaultInteractionDialogMode(originalMode);
         }
     }
 
