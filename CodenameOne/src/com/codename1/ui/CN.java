@@ -1507,7 +1507,7 @@ public class CN extends CN1Constants {
     ///
     /// ```java
     /// // File: Main.java
-    /// public Main {
+    /// public class Main {
     ///   public void init(Object o) {
     ///     theme = UIManager.initFirstTheme("/theme");
     ///
@@ -1531,7 +1531,7 @@ public class CN extends CN1Constants {
     ///
     /// ```java
     /// // File: MyClass.java
-    /// public MyClass implements Externalizable {
+    /// public class MyClass implements Externalizable {
     ///   // allows us to manipulate the version, in this case we are demonstrating a data change between the initial release
     ///   // and the current state of object data
     ///   private static final int VERSION = 2;
@@ -1601,7 +1601,7 @@ public class CN extends CN1Constants {
     ///
     /// ```java
     /// // File: Main.java
-    /// public Main {
+    /// public class Main {
     ///   public void init(Object o) {
     ///     theme = UIManager.initFirstTheme("/theme");
     ///
@@ -1625,7 +1625,7 @@ public class CN extends CN1Constants {
     ///
     /// ```java
     /// // File: MyClass.java
-    /// public MyClass implements Externalizable {
+    /// public class MyClass implements Externalizable {
     ///   // allows us to manipulate the version, in this case we are demonstrating a data change between the initial release
     ///   // and the current state of object data
     ///   private static final int VERSION = 2;
