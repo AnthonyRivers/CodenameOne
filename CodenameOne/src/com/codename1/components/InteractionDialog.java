@@ -68,6 +68,14 @@ import com.codename1.ui.util.UITimer;
 ///
 /// @author Shai Almog
 public class InteractionDialog extends Container implements AbstractDialog {
+    private static final Runnable BLOCKING_SLEEP = new BlockingSleepRunnable();
+
+    private static class BlockingSleepRunnable implements Runnable {
+        public void run() {
+            com.codename1.io.Util.sleep(10);
+        }
+    }
+
     private final Label title = new Label();
     private final Container titleArea = new Container(new BorderLayout());
     private final Container contentPane;
@@ -989,11 +997,7 @@ public class InteractionDialog extends Container implements AbstractDialog {
         int topBottom = Math.max(0, (height - prefHeight) / 2);
         show(topBottom, topBottom, leftRight, leftRight);
         while (isShowing()) {
-            CN.invokeAndBlock(new Runnable() {
-                public void run() {
-                    com.codename1.io.Util.sleep(10);
-                }
-            });
+            CN.invokeAndBlock(BLOCKING_SLEEP);
         }
         return lastCommandPressed;
     }
