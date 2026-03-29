@@ -1,5 +1,8 @@
 name: Java snippet validation
 
+permissions:
+  contents: read
+
 on:
   pull_request:
     paths:
