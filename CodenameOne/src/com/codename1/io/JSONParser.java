@@ -50,7 +50,7 @@ import java.util.Vector;
 /// JSONParser json = new JSONParser();
 /// try(Reader r = new InputStreamReader(Display.getInstance().getResourceAsStream(getClass(), "/anapioficeandfire.json"), "UTF-8")) {
 ///     Map data = json.parseJSON(r);
-///     java.util.List> content = (java.util.List>)data.get("root");
+///     java.util.List<Map<String, Object>> content = (java.util.List<Map<String, Object>>)data.get("root");
 ///     for(Map obj : content) {
 ///         String url = (String)obj.get("url");
 ///         String name = (String)obj.get("name");
@@ -822,7 +822,7 @@ public class JSONParser implements JSONParseCallback {
     /// JSONParser json = new JSONParser();
     /// try(Reader r = new InputStreamReader(Display.getInstance().getResourceAsStream(getClass(), "/anapioficeandfire.json"), "UTF-8")) {
     ///     Map data = json.parseJSON(r);
-    ///     java.util.List> content = (java.util.List>)data.get("root");
+    ///     java.util.List<Map<String, Object>> content = (java.util.List<Map<String, Object>>)data.get("root");
     ///     for(Map obj : content) {
     ///         String url = (String)obj.get("url");
     ///         String name = (String)obj.get("name");
