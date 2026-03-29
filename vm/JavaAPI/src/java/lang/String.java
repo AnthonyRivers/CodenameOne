@@ -901,11 +901,38 @@ public final class String implements java.lang.CharSequence, Comparable<String> 
     public native static String format(String format, Object... args);
 
     public String[] split(String regex) {
-        return com.codename1.impl.JdkApiRewriteHelper.split(this, regex);
+        return split(regex, 0);
     }
 
     public String[] split(String regex, int limit) {
-        return com.codename1.impl.JdkApiRewriteHelper.split(this, regex, limit);
+        if (regex == null) {
+            throw new NullPointerException();
+        }
+        if (regex.length() == 0) {
+            return new String[]{this};
+        }
+        java.util.Vector<String> out = new java.util.Vector<String>();
+        int start = 0;
+        int match;
+        while ((match = indexOf(regex, start)) >= 0) {
+            if (limit > 0 && out.size() == limit - 1) {
+                break;
+            }
+            out.addElement(substring(start, match));
+            start = match + regex.length();
+        }
+        out.addElement(substring(start));
+        int resultSize = out.size();
+        if (limit == 0) {
+            while (resultSize > 0 && out.elementAt(resultSize - 1).length() == 0) {
+                resultSize--;
+            }
+        }
+        String[] result = new String[resultSize];
+        for (int i = 0; i < resultSize; i++) {
+            result[i] = out.elementAt(i);
+        }
+        return result;
     }
     
     public boolean contains(CharSequence seq) {
