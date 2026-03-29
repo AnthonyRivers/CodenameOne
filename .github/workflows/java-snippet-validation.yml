@@ -9,6 +9,7 @@ on:
       - 'scripts/extract-javadoc-java-snippets.sh'
       - 'scripts/java-snippet-to-playground-uri.sh'
       - 'scripts/validate-extracted-javadoc-snippets.sh'
+      - 'scripts/java-snippet-validation-exclusions.jsonl'
       - '.github/workflows/java-snippet-validation.yml'
 
 jobs:
@@ -42,6 +43,7 @@ jobs:
             "scripts/extract-javadoc-java-snippets.sh"
             "scripts/java-snippet-to-playground-uri.sh"
             "scripts/validate-extracted-javadoc-snippets.sh"
+            "scripts/java-snippet-validation-exclusions.jsonl"
             ".github/workflows/java-snippet-validation.yml"
           )
 

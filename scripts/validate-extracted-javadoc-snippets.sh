@@ -12,49 +12,29 @@ if [[ ! -f "$JSONL_FILE" ]]; then
   exit 2
 fi
 
-python3 - "$JSONL_FILE" <<'PY'
+EXCLUSIONS_FILE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/java-snippet-validation-exclusions.jsonl"
+
+python3 - "$JSONL_FILE" "$EXCLUSIONS_FILE" <<'PY'
 import json
 import pathlib
-import re
 import subprocess
 import sys
 import tempfile
 
 jsonl_path = pathlib.Path(sys.argv[1])
+exclusions_path = pathlib.Path(sys.argv[2])
 failures = []
-excluded = []
 count = 0
+excluded_count = 0
 
-EXCLUSION_RULES = [
-    (
-        re.compile(r"Encountered: \"`\""),
-        "Malformed markdown/code fence content in source docs (contains literal backticks).",
-    ),
-    (
-        re.compile(r"Util\.getImplementation\(\).*is null|Display\.impl.*is null"),
-        "Snippet requires a live Codename One runtime (not available in playground conversion harness).",
-    ),
-    (
-        re.compile(r"Class: .* not found in namespace|undefined variable or class name|Undefined argument:"),
-        "Snippet is partial/illustrative and omits surrounding declarations/imports.",
-    ),
-    (
-        re.compile(r"Generated instance dispatch not implemented|Command not found:"),
-        "Snippet depends on framework dispatch/features not supported by the conversion harness.",
-    ),
-    (
-        re.compile(r"Parse error:|Lexical error at line"),
-        "Snippet is not standalone Java for direct harness evaluation (requires adaptation).",
-    ),
-]
-
-
-def exclusion_reason(result: str):
-    for pattern, reason in EXCLUSION_RULES:
-        if pattern.search(result):
-            return reason
-    return None
-
+exclusions = {}
+if exclusions_path.exists():
+    for line in exclusions_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        key = f"{item.get('sourceFile')}#{item.get('snippetIndex')}"
+        exclusions[key] = item.get("reason", "Explicitly excluded.")
 
 for line in jsonl_path.read_text(encoding="utf-8").splitlines():
     if not line.strip():
@@ -72,27 +52,26 @@ for line in jsonl_path.read_text(encoding="utf-8").splitlines():
     )
     output = (proc.stdout or "").strip()
     if proc.returncode != 0 or not output.startswith("/playground/?code="):
-        result = output or (proc.stderr or "").strip()
-        reason = exclusion_reason(result)
-        payload = {
-            "sourceFile": record.get("sourceFile"),
-            "symbol": record.get("symbol"),
-            "snippetIndex": record.get("snippetIndex"),
-            "result": result,
-        }
-        if reason:
-            payload["excludedReason"] = reason
-            excluded.append(payload)
-        else:
-            failures.append(payload)
+        key = f"{record.get('sourceFile')}#{record.get('snippetIndex')}"
+        if key in exclusions:
+            excluded_count += 1
+            continue
+        failures.append(
+            {
+                "sourceFile": record.get("sourceFile"),
+                "symbol": record.get("symbol"),
+                "snippetIndex": record.get("snippetIndex"),
+                "result": output or (proc.stderr or "").strip(),
+            }
+        )
 
 if failures:
     print(f"Snippet validation failed for {len(failures)} snippets out of {count}.")
-    print(f"Excluded {len(excluded)} known non-standalone snippets.")
+    print(f"Excluded {excluded_count} snippets via explicit exclusion list.")
     for failure in failures[:50]:
         print(json.dumps(failure, ensure_ascii=False))
     sys.exit(1)
 
-print(f"Validated {count - len(excluded)} snippets successfully.")
-print(f"Excluded {len(excluded)} known non-standalone snippets.")
+print(f"Validated {count - excluded_count} snippets successfully.")
+print(f"Excluded {excluded_count} snippets via explicit exclusion list.")
 PY
