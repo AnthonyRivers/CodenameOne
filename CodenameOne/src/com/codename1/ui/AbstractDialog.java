@@ -9,6 +9,8 @@
  */
 package com.codename1.ui;
 
+import com.codename1.ui.animations.Transition;
+
 /// Shared dialog contract for `Dialog` and `InteractionDialog`.
 public interface AbstractDialog {
     /// Adds a component to the dialog using layout constraints.

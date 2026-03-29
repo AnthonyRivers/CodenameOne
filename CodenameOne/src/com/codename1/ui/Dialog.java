@@ -1183,11 +1183,6 @@ public class Dialog extends Form implements AbstractDialog {
     }
 
     /// {@inheritDoc}
-    public void setDialogType(int dialogType) {
-        this.dialogType = dialogType;
-    }
-
-    /// {@inheritDoc}
     public void setTransitions(Transition transition) {
         setTransitionInAnimator(transition);
         setTransitionOutAnimator(transition);
