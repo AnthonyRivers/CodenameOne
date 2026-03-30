@@ -46,6 +46,7 @@ public final class GenerateCN1AccessRegistry {
     private static final String HELPER_CLASS_PREFIX = "GeneratedAccess_";
     private static final int FIND_CLASS_CHUNK_SIZE = 64;
     private static final char MEMBER_SEPARATOR = '\u001f';
+    private static final Map<String, Boolean> RUNTIME_PUBLIC_TYPE_CACHE = new HashMap<String, Boolean>();
 
     private static final String[] INDEX_PACKAGE_PREFIXES = new String[]{
             "com.codename1.",
@@ -62,18 +63,23 @@ public final class GenerateCN1AccessRegistry {
         }
         File rootOutput = new File(args[0]);
         File projectRoot = projectRoot(rootOutput);
-        File cn1Root = locateCn1Root(projectRoot);
-        Discovery discovery = discover(projectRoot, cn1Root);
+        Discovery discovery = discover(projectRoot);
         File helperDir = new File(rootOutput.getParentFile(), "gen");
         recreateDir(helperDir);
         writeRootRegistry(rootOutput, discovery);
         writePackageHelpers(helperDir, discovery);
     }
 
-    private static Discovery discover(File projectRoot, File cn1Root) throws Exception {
+    private static Discovery discover(File projectRoot) throws Exception {
         List<File> sourceRoots = new ArrayList<File>();
-        sourceRoots.add(new File(cn1Root, "CodenameOne/src"));
-        sourceRoots.add(new File(cn1Root, "Ports/CLDC11/src"));
+        List<File> configuredRoots = configuredCn1SourceRoots();
+        if (!configuredRoots.isEmpty()) {
+            sourceRoots.addAll(configuredRoots);
+        } else {
+            File cn1Root = locateCn1Root(projectRoot);
+            sourceRoots.add(new File(cn1Root, "CodenameOne/src"));
+            sourceRoots.add(new File(cn1Root, "Ports/CLDC11/src"));
+        }
         sourceRoots.add(new File(projectRoot, "common/src/main/java"));
 
         List<File> sourceFiles = new ArrayList<File>();
@@ -95,6 +101,7 @@ public final class GenerateCN1AccessRegistry {
         for (SourceClass sourceClass : indexedClasses.values()) {
             knownTypes.addAll(sourceClass.nestedTypes.values());
         }
+        knownTypes = filterKnownTypes(knownTypes);
 
         List<ApiClass> apiClasses = new ArrayList<ApiClass>();
         for (SourceClass sourceClass : indexedClasses.values()) {
@@ -140,6 +147,25 @@ public final class GenerateCN1AccessRegistry {
         }
 
         return new Discovery(indexedClassNames, packages);
+    }
+
+    private static List<File> configuredCn1SourceRoots() {
+        String env = System.getenv("CN1_SOURCE_ROOTS");
+        if (env == null || env.trim().length() == 0) {
+            return Collections.emptyList();
+        }
+        List<File> out = new ArrayList<File>();
+        String[] entries = env.split(File.pathSeparator);
+        for (String entry : entries) {
+            if (entry == null || entry.trim().length() == 0) {
+                continue;
+            }
+            File root = new File(entry.trim());
+            if (root.isDirectory()) {
+                out.add(root);
+            }
+        }
+        return out;
     }
 
     private static List<SourceUnit> parseSourceUnits(List<File> sourceFiles) throws IOException {
@@ -988,7 +1014,9 @@ private static List<ApiMethod> filterBridgeLikeMethods(List<ApiMethod> methods, 
     }
 
     private static boolean isDispatchClass(ApiClass apiClass) {
-        return apiClass.packageName.startsWith("com.codename1.")
+        return (apiClass.packageName.startsWith("com.codename1.")
+                && !isPackageOrChild(apiClass.packageName, "com.codename1.impl"))
+                && isPublicRuntimeType(apiClass.qualifiedName)
                 || isSupportedJavaDispatchPackage(apiClass.packageName)
                 || "com.codenameone.playground".equals(apiClass.packageName)
                 || apiClass.packageName.startsWith("com.codenameone.playground.");
@@ -1013,10 +1041,16 @@ private static List<ApiMethod> filterBridgeLikeMethods(List<ApiMethod> methods, 
         if ("void".equals(name)) {
             return true;
         }
+        if (name.startsWith("com.codename1.")) {
+            if (!isPublicRuntimeType(name)) {
+                return false;
+            }
+        }
         return !name.startsWith("java.lang.reflect.")
                 && !name.startsWith("java.lang.annotation.")
                 && !name.startsWith("java.lang.invoke.")
                 && !name.startsWith("java.lang.constant.")
+                && !name.startsWith("com.codename1.impl.")
                 && !name.startsWith("java.io.")
                 && !name.startsWith("java.net.")
                 && !name.startsWith("java.nio.")
@@ -1024,6 +1058,28 @@ private static List<ApiMethod> filterBridgeLikeMethods(List<ApiMethod> methods, 
                 && !name.startsWith("java.util.concurrent.")
                 && !name.startsWith("java.util.function.")
                 && !name.startsWith("java.util.stream.");
+    }
+
+    private static boolean isPublicRuntimeType(String className) {
+        Boolean cached = RUNTIME_PUBLIC_TYPE_CACHE.get(className);
+        if (cached != null) {
+            return cached.booleanValue();
+        }
+        Class<?> runtimeClass = loadRuntimeClass(className);
+        boolean supported = runtimeClass != null && java.lang.reflect.Modifier.isPublic(runtimeClass.getModifiers());
+        RUNTIME_PUBLIC_TYPE_CACHE.put(className, Boolean.valueOf(supported));
+        return supported;
+    }
+
+    private static LinkedHashSet<String> filterKnownTypes(LinkedHashSet<String> knownTypes) {
+        LinkedHashSet<String> filtered = new LinkedHashSet<String>();
+        for (String knownType : knownTypes) {
+            if (knownType.startsWith("com.codename1.") && !isPublicRuntimeType(knownType)) {
+                continue;
+            }
+            filtered.add(knownType);
+        }
+        return filtered;
     }
 
     private static boolean isPackageOrChild(String name, String packageName) {
