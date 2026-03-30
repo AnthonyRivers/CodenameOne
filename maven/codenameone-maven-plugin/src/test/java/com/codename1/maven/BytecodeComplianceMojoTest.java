@@ -15,6 +15,8 @@ import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -126,6 +128,35 @@ class BytecodeComplianceMojoTest {
 
         byte[] rewritten = Files.readAllBytes(classFile);
         assertTrue(containsMethodInsn(rewritten, "com/codename1/impl/JdkApiRewriteHelper", "split", "(Ljava/lang/String;Ljava/lang/String;)[Ljava/lang/String;", Opcodes.INVOKESTATIC));
+    }
+
+    @Test
+    void skipsModuleInfoAndMultiReleaseJarEntries(@TempDir Path tempDir) throws Exception {
+        Path jarFile = tempDir.resolve("deps.jar");
+        writeJar(jarFile,
+                new JarEntryBytes("module-info.class", new byte[]{0x1, 0x2, 0x3}),
+                new JarEntryBytes("META-INF/versions/21/bad/TooNew.class", new byte[]{0x4, 0x5, 0x6}),
+                new JarEntryBytes("good/Api.class", classBytes("good/Api")));
+
+        BytecodeComplianceMojo mojo = new BytecodeComplianceMojo();
+        Map<String, ?> index = buildClassIndex(mojo, Collections.singletonList(jarFile.toFile()));
+
+        assertEquals(1, index.size(), "Expected only the real API class to be indexed");
+        assertTrue(index.containsKey("good/Api"), "Expected valid class entry to be indexed");
+    }
+
+    @Test
+    void skipsUnreadableJarClassEntriesInsteadOfFailing(@TempDir Path tempDir) throws Exception {
+        Path jarFile = tempDir.resolve("deps.jar");
+        writeJar(jarFile,
+                new JarEntryBytes("good/Api.class", classBytes("good/Api")),
+                new JarEntryBytes("broken/Broken.class", new byte[]{0x1, 0x2, 0x3, 0x4}));
+
+        BytecodeComplianceMojo mojo = new BytecodeComplianceMojo();
+        Map<String, ?> index = buildClassIndex(mojo, Collections.singletonList(jarFile.toFile()));
+
+        assertTrue(index.containsKey("good/Api"), "Expected valid class to be indexed");
+        assertEquals(1, index.size(), "Expected invalid class entry to be skipped");
     }
 
     @SuppressWarnings("unchecked")
@@ -314,5 +345,32 @@ class BytecodeComplianceMojoTest {
         Path classFile = root.resolve(className + ".class");
         Files.createDirectories(classFile.getParent());
         Files.write(classFile, bytes);
+    }
+
+    private byte[] classBytes(String className) {
+        ClassWriter writer = new ClassWriter(0);
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, className, null, "java/lang/Object", null);
+        writer.visitEnd();
+        return writer.toByteArray();
+    }
+
+    private void writeJar(Path jarPath, JarEntryBytes... entries) throws Exception {
+        try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jarPath))) {
+            for (JarEntryBytes entry : entries) {
+                out.putNextEntry(new JarEntry(entry.path));
+                out.write(entry.bytes);
+                out.closeEntry();
+            }
+        }
+    }
+
+    private static class JarEntryBytes {
+        private final String path;
+        private final byte[] bytes;
+
+        private JarEntryBytes(String path, byte[] bytes) {
+            this.path = path;
+            this.bytes = bytes;
+        }
     }
 }

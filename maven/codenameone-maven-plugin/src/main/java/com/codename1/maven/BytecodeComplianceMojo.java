@@ -375,8 +375,10 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
                     try {
                         InputStream inputStream = new BufferedInputStream(new FileInputStream(classFile));
                         try {
-                            ClassMetadata metadata = readClassMetadata(inputStream);
-                            index.put(metadata.name, metadata);
+                            ClassMetadata metadata = readClassMetadata(inputStream, classFile.getAbsolutePath());
+                            if (metadata != null) {
+                                index.put(metadata.name, metadata);
+                            }
                         } finally {
                             inputStream.close();
                         }
@@ -391,13 +393,15 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
                     Enumeration<JarEntry> entries = jarFile.entries();
                     while (entries.hasMoreElements()) {
                         JarEntry entry = entries.nextElement();
-                        if (entry.isDirectory() || !entry.getName().endsWith(".class")) {
+                        if (shouldSkipJarClassEntry(entry)) {
                             continue;
                         }
                         InputStream inputStream = jarFile.getInputStream(entry);
                         try {
-                            ClassMetadata metadata = readClassMetadata(inputStream);
-                            index.put(metadata.name, metadata);
+                            ClassMetadata metadata = readClassMetadata(inputStream, root + "!" + entry.getName());
+                            if (metadata != null) {
+                                index.put(metadata.name, metadata);
+                            }
                         } finally {
                             inputStream.close();
                         }
@@ -417,30 +421,49 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
         return index;
     }
 
-    private ClassMetadata readClassMetadata(InputStream inputStream) throws IOException {
+    private boolean shouldSkipJarClassEntry(JarEntry entry) {
+        if (entry.isDirectory()) {
+            return true;
+        }
+        String name = entry.getName();
+        if (!name.endsWith(".class")) {
+            return true;
+        }
+        if ("module-info.class".equals(name)) {
+            return true;
+        }
+        return name.startsWith("META-INF/versions/");
+    }
+
+    private ClassMetadata readClassMetadata(InputStream inputStream, String sourceDescription) throws IOException {
         final ClassMetadata metadata = new ClassMetadata();
-        ClassReader reader = new ClassReader(inputStream);
-        reader.accept(new ClassVisitor(Opcodes.ASM9) {
-            @Override
-            public void visit(int version, int access, String name, String signature, String superName, String[] interfaces) {
-                metadata.name = name;
-                metadata.superName = superName;
-                metadata.interfaces = interfaces == null ? Collections.<String>emptyList() : Arrays.asList(interfaces);
-            }
+        try {
+            ClassReader reader = new ClassReader(inputStream);
+            reader.accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override
+                public void visit(int version, int access, String name, String signature, String superName, String[] interfaces) {
+                    metadata.name = name;
+                    metadata.superName = superName;
+                    metadata.interfaces = interfaces == null ? Collections.<String>emptyList() : Arrays.asList(interfaces);
+                }
 
-            @Override
-            public FieldVisitor visitField(int access, String name, String descriptor, String signature, Object value) {
-                metadata.fields.add(memberKey(name, descriptor));
-                return null;
-            }
+                @Override
+                public FieldVisitor visitField(int access, String name, String descriptor, String signature, Object value) {
+                    metadata.fields.add(memberKey(name, descriptor));
+                    return null;
+                }
 
-            @Override
-            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
-                metadata.methods.add(memberKey(name, descriptor));
-                return null;
-            }
-        }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
-        return metadata;
+                @Override
+                public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                    metadata.methods.add(memberKey(name, descriptor));
+                    return null;
+                }
+            }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+            return metadata;
+        } catch (RuntimeException ex) {
+            getLog().warn("Skipping unreadable class metadata from " + sourceDescription + ": " + ex.getMessage());
+            return null;
+        }
     }
 
     private List<File> getDependencyJarsForScanning() {
