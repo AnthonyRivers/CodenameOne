@@ -110,7 +110,8 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
         List<Violation> violations = scanProjectClasses(outputDir, allowedIndex, projectAndDependencyIndex);
         if (!violations.isEmpty()) {
             writeComplianceReport(violations, outputDir, dependencyJars, rewrittenClassCount);
-            throw new MojoExecutionException(buildFailureSummary(violations));
+            logViolationSummary(violations);
+            throw new MojoFailureException(buildFailureSummary(violations));
         }
 
         writeComplianceSuccess("Completed compliance check on " + project.getName(), rewrittenClassCount);
@@ -187,16 +188,23 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
         if (violations.size() != 1) {
             sb.append("s");
         }
-        sb.append(". See ").append(complianceOutputFile.getAbsolutePath()).append(" for full report.");
-        sb.append(" First ").append(maxInMessage).append(" violation(s): ");
+        sb.append(".\n");
+        sb.append("See ").append(complianceOutputFile.getAbsolutePath()).append(" for the full report.\n");
+        sb.append("First ").append(maxInMessage).append(" violation(s):");
         for (int i = 0; i < maxInMessage; i++) {
-            if (i > 0) {
-                sb.append(" | ");
-            }
             Violation v = violations.get(i);
-            sb.append(v.sourceClass).append("#").append(v.sourceMethod).append(" -> ").append(v.referencedMember);
+            sb.append("\n - ").append(v.renderInline());
         }
         return sb.toString();
+    }
+
+    private void logViolationSummary(List<Violation> violations) {
+        int maxToLog = Math.min(5, violations.size());
+        getLog().error("Bytecode compliance check found " + violations.size() + " violation(s).");
+        getLog().error("Detailed report written to " + complianceOutputFile.getAbsolutePath());
+        for (int i = 0; i < maxToLog; i++) {
+            getLog().error("[" + (i + 1) + "] " + violations.get(i).renderInline());
+        }
     }
 
 
@@ -772,6 +780,17 @@ public class BytecodeComplianceMojo extends AbstractCN1Mojo {
             sb.append("Forbidden reference: ").append(referencedMember);
             if (suggestion != null && !suggestion.isEmpty()) {
                 sb.append("\nSuggested replacement: ").append(suggestion);
+            }
+            return sb.toString();
+        }
+
+        private String renderInline() {
+            StringBuilder sb = new StringBuilder();
+            sb.append(sourceClass).append("#").append(sourceMethod)
+                    .append(" -> ").append(referencedMember)
+                    .append(" (").append(sourcePath).append(")");
+            if (suggestion != null && !suggestion.isEmpty()) {
+                sb.append(" Suggestion: ").append(suggestion);
             }
             return sb.toString();
         }
