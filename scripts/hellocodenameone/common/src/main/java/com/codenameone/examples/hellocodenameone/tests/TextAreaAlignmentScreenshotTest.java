@@ -11,7 +11,15 @@ import com.codename1.ui.layouts.BorderLayout;
 import com.codename1.ui.layouts.GridLayout;
 
 public class TextAreaAlignmentScreenshotTest extends BaseTest {
-    private static final Font SMALL_FONT = Font.createSystemFont(Font.FACE_SYSTEM, Font.STYLE_PLAIN, Font.SIZE_SMALL);
+    private Font smallFont;
+
+    private Font getSmallFont() {
+        if (smallFont == null) {
+            Font base = Font.createTrueTypeFont(Font.NATIVE_MAIN_REGULAR, Font.NATIVE_MAIN_REGULAR);
+            smallFont = base.derive(base.getPixelSize() * 0.65f, Font.STYLE_PLAIN);
+        }
+        return smallFont;
+    }
 
     @Override
     public boolean runTest() {
@@ -42,7 +50,7 @@ public class TextAreaAlignmentScreenshotTest extends BaseTest {
         Container wrapper = new Container(new BorderLayout());
         wrapper.getAllStyles().setPadding(2, 2, 2, 2);
         Label titleLabel = new Label(title);
-        titleLabel.getAllStyles().setFont(SMALL_FONT);
+        titleLabel.getAllStyles().setFont(getSmallFont());
         wrapper.add(BorderLayout.NORTH, titleLabel);
         wrapper.add(BorderLayout.CENTER, input);
         return wrapper;
@@ -50,7 +58,7 @@ public class TextAreaAlignmentScreenshotTest extends BaseTest {
 
     private TextField createField(int valign) {
         TextField field = new TextField("Single line");
-        field.getAllStyles().setFont(SMALL_FONT);
+        field.getAllStyles().setFont(getSmallFont());
         field.setVerticalAlignment(valign);
         field.setEditable(false);
         field.setPreferredH(field.getPreferredH() * 3);
@@ -62,7 +70,7 @@ public class TextAreaAlignmentScreenshotTest extends BaseTest {
                 ? new TextArea("Line 1\nLine 2\nLine 3\nLine 4\nLine 5")
                 : new TextArea("Line 1\nLine 2");
         area.setSingleLineTextArea(false);
-        area.getAllStyles().setFont(SMALL_FONT);
+        area.getAllStyles().setFont(getSmallFont());
         area.setEditable(false);
         area.setVerticalAlignment(valign);
         area.setRows(overflow ? 3 : 4);
