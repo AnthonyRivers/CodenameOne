@@ -9,14 +9,20 @@ import com.codename1.ui.util.UITimer;
 import com.codename1.ui.validation.LengthConstraint;
 import com.codename1.ui.validation.Validator;
 
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 
 public class ValidatorLightweightPickerScreenshotTest extends BaseTest {
     private Picker picker;
+    private final List<TextField> fields = new ArrayList<>();
+    private boolean originalValidateOnEveryKey;
 
     @Override
     public boolean runTest() {
         Form form = createForm("Validator + Picker", BoxLayout.y(), "ValidatorLightweightPicker");
+        originalValidateOnEveryKey = Validator.isValidateOnEveryKey();
+        Validator.setValidateOnEveryKey(true);
 
         PickerComponent birthDate = PickerComponent.createDate(new Date()).label("Birthdate");
         picker = birthDate.getPicker();
@@ -31,6 +37,7 @@ public class ValidatorLightweightPickerScreenshotTest extends BaseTest {
             TextField tf = new TextField();
             tf.setHint("Field " + i);
             form.add(tf);
+            fields.add(tf);
             validator.addConstraint(tf, new LengthConstraint(5, "Must be at least 5 chars"));
         }
 
@@ -40,7 +47,17 @@ public class ValidatorLightweightPickerScreenshotTest extends BaseTest {
 
     @Override
     protected void registerReadyCallback(Form parent, Runnable run) {
+        for (TextField field : fields) {
+            field.setText("x");
+        }
         picker.startEditingAsync();
         UITimer.timer(1000, false, parent, run);
+    }
+
+    @Override
+    public void cleanup() {
+        Validator.setValidateOnEveryKey(originalValidateOnEveryKey);
+        fields.clear();
+        super.cleanup();
     }
 }
