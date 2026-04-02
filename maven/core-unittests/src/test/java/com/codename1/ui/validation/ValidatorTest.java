@@ -1,6 +1,7 @@
 package com.codename1.ui.validation;
 
 import com.codename1.junit.FormTest;
+import com.codename1.components.InteractionDialog;
 import com.codename1.junit.UITestBase;
 import com.codename1.ui.Button;
 import com.codename1.ui.Component;
@@ -203,6 +204,27 @@ class ValidatorTest extends UITestBase {
 
         assertTrue(listener.isPointCoveredByFormLayer(40, 40, form));
         assertFalse(listener.isPointCoveredByFormLayer(5, 5, form));
+    }
+
+    @FormTest
+    void testValidationEmblemSkippedWhenCoveredByFormLayeredPane() {
+        Form form = new Form(new BoxLayout(BoxLayout.Y_AXIS));
+        TextField tf = new TextField();
+        form.add(tf);
+        form.show();
+
+        Validator validator = new Validator();
+        Validator.ComponentListener listener = validator.new ComponentListener(tf);
+
+        Container interactionLayer = form.getFormLayeredPane(InteractionDialog.class, true);
+        Label overlay = new Label("Overlay");
+        overlay.setX(20);
+        overlay.setY(20);
+        overlay.setWidth(80);
+        overlay.setHeight(40);
+        interactionLayer.add(overlay);
+
+        assertTrue(listener.isPointCoveredByFormLayer(40, 40, form));
     }
 
     @FormTest

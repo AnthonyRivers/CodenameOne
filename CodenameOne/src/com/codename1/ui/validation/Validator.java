@@ -813,7 +813,8 @@ public class Validator {
             if (form == null) {
                 return false;
             }
-            return isPointCoveredByContainer(x, y, form.getLayeredPane());
+            return isPointCoveredByContainer(x, y, form.getLayeredPane()) ||
+                    isPointCoveredByContainer(x, y, form.getFormLayeredPane(InteractionDialog.class, true));
         }
 
         private boolean isPointCoveredByContainer(int x, int y, Container container) {
@@ -826,7 +827,7 @@ public class Validator {
                     if (child instanceof Container && isPointCoveredByContainer(x, y, (Container) child)) {
                         return true;
                     }
-                    if (child.isVisible() && child.visibleBoundsContains(x, y)) {
+                    if (!(child instanceof Container) && child.isVisible() && child.visibleBoundsContains(x, y)) {
                         return true;
                     }
                 }
