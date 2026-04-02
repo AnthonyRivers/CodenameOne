@@ -223,7 +223,7 @@ class ValidatorTest extends UITestBase {
         validator.setValidationFailureHighlightMode(Validator.HighlightMode.EMBLEM);
         validator.setValidationEmblemPositionX(1f);
         validator.setValidationEmblemPositionY(0.5f);
-        Image emblem = Image.createImage(8, 8, 0xff0000);
+        Image emblem = Image.createImage(8, 8, 0xffff0000);
         validator.setValidationFailedEmblem(emblem);
         validator.addConstraint(first, new LengthConstraint(5, "Too short"));
         validator.addConstraint(second, new LengthConstraint(5, "Too short"));
