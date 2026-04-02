@@ -788,8 +788,8 @@ public class Validator {
                     xpos += Math.round(width * validationEmblemPositionX);
                     ypos += Math.round(height * validationEmblemPositionY);
 
-                    Form currentForm = c.getComponentForm();
-                    if (isPointCoveredByFormLayer(xpos, ypos, currentForm)) {
+                    Form componentForm = c.getComponentForm();
+                    if (isPointCoveredByFormLayer(xpos, ypos, componentForm)) {
                         continue;
                     }
 
