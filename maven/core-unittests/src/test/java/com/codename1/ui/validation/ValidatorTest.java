@@ -221,7 +221,9 @@ class ValidatorTest extends UITestBase {
         overlay.setWidth(80);
         overlay.setHeight(40);
         dialog.add(overlay);
+        dialog.setAnimateShow(false);
         dialog.showPopupDialog(tf);
+        flushSerialCalls();
 
         int x = dialog.getAbsoluteX() + Math.max(1, dialog.getWidth() / 2);
         int y = dialog.getAbsoluteY() + Math.max(1, dialog.getHeight() / 2);
