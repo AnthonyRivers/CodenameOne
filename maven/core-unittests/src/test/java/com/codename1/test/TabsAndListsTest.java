@@ -64,7 +64,7 @@ public class TabsAndListsTest extends UITestBase {
         int width = image.getWidth();
         int height = image.getHeight();
         int[] rgb = new int[width * height];
-        image.getRGB(rgb, 0, 0, 0, width, height);
+        image.getRGB(rgb);
         for (int pixel : rgb) {
             if (((pixel >>> 24) & 0xff) > 0) {
                 return pixel & 0x00ffffff;
