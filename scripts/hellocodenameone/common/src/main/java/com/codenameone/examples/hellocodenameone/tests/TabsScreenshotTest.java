@@ -16,7 +16,7 @@ public class TabsScreenshotTest extends BaseTest {
         tabs.setTabUIID("TabsColorSync");
 
         tabs.addTab("MatIcn", FontImage.MATERIAL_10MP, 8, new Button("Tab with material icon"));
-        tabs.addTab("ImgIcn", FontImage.MATERIAL_HOME, 8, new Button("Tab with explicit selected icon"));
+        tabs.addTab("MatHome", FontImage.MATERIAL_HOME, 8, new Button("Second tab with material icon"));
         tabs.addTab("Txt", new Button("Tab without icon"));
         tabs.setSelectedIndex(1);
 

@@ -67,6 +67,6 @@ TabsColorSync {
 }
 
 TabsColorSync.sel,
-TabsColorSync.pressed {
+TabsColorSync.press {
     color: green;
 }
