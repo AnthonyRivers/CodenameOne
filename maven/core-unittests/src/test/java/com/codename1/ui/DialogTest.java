@@ -128,6 +128,7 @@ class DialogTest extends UITestBase {
         implementation.setBuiltinSoundsEnabled(false);
         final boolean[] showResult = new boolean[1];
         final Throwable[] error = new Throwable[1];
+        final Dialog[] currentDialog = new Dialog[1];
         boolean originalMode = Dialog.isDefaultInteractionDialogMode();
         Dialog.setDefaultInteractionDialogMode(false);
         Thread showThread = new Thread(new Runnable() {
@@ -142,22 +143,33 @@ class DialogTest extends UITestBase {
         });
         try {
             showThread.start();
-
-            Dialog current = null;
-            long deadline = System.currentTimeMillis() + 1500L;
-            while (System.currentTimeMillis() < deadline) {
-                Form shown = Display.getInstance().getCurrent();
-                if (shown instanceof Dialog) {
-                    current = (Dialog) shown;
-                    break;
+            Display.getInstance().invokeAndBlock(new Runnable() {
+                @Override
+                public void run() {
+                    long deadline = System.currentTimeMillis() + 1500L;
+                    while (System.currentTimeMillis() < deadline && currentDialog[0] == null) {
+                        Display.getInstance().callSeriallyAndWait(new Runnable() {
+                            @Override
+                            public void run() {
+                                Form shown = Display.getInstance().getCurrent();
+                                if (shown instanceof Dialog) {
+                                    currentDialog[0] = (Dialog) shown;
+                                    currentDialog[0].dispose();
+                                }
+                            }
+                        });
+                        if (currentDialog[0] == null) {
+                            try {
+                                Thread.sleep(20L);
+                            } catch (InterruptedException ignored) {
+                            }
+                        }
+                    }
                 }
-                Thread.sleep(20L);
-            }
-
-            assertNotNull(current, "Static show(String, String, String, String) must display a Dialog form");
-            current.dispose();
+            });
             showThread.join(1500L);
 
+            assertNotNull(currentDialog[0], "Static show(String, String, String, String) must display a Dialog form");
             assertFalse(showThread.isAlive(), "Static dialog show thread should exit once dialog is disposed");
             assertNull(error[0], "Static dialog show should not throw");
             assertFalse(showResult[0], "Disposing without choosing command should return false");
