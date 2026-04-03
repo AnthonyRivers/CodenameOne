@@ -5,6 +5,7 @@ import com.codename1.junit.UITestBase;
 import com.codename1.ui.Button;
 import com.codename1.ui.Component;
 import com.codename1.ui.Container;
+import com.codename1.ui.Display;
 import com.codename1.ui.Form;
 import com.codename1.ui.Graphics;
 import com.codename1.ui.Image;
@@ -235,9 +236,10 @@ class ValidatorTest extends UITestBase {
 
         int secondX = second.getAbsoluteX() + second.getWidth();
         int secondY = second.getAbsoluteY() + second.getHeight() / 2;
+        int secondEmblemCenterX = expectedEmblemCenterX(secondX, emblem.getWidth());
 
         Label overlay = new Label();
-        overlay.setX(secondX - 10);
+        overlay.setX(secondEmblemCenterX - 10);
         overlay.setY(secondY - 10);
         overlay.setWidth(20);
         overlay.setHeight(20);
@@ -249,9 +251,17 @@ class ValidatorTest extends UITestBase {
 
         int firstX = first.getAbsoluteX() + first.getWidth();
         int firstY = first.getAbsoluteY() + first.getHeight() / 2;
+        int firstEmblemCenterX = expectedEmblemCenterX(firstX, emblem.getWidth());
 
-        assertTrue(hasColorNear(canvas, firstX, firstY, 0xff0000), "Expected first emblem to be painted");
-        assertFalse(hasColorNear(canvas, secondX, secondY, 0xff0000), "Expected second emblem to be skipped due to overlay");
+        assertTrue(hasColorNear(canvas, firstEmblemCenterX, firstY, 0xff0000), "Expected first emblem to be painted");
+        assertFalse(hasColorNear(canvas, secondEmblemCenterX, secondY, 0xff0000), "Expected second emblem to be skipped due to overlay");
+    }
+
+    private int expectedEmblemCenterX(int anchorX, int emblemWidth) {
+        if (anchorX + emblemWidth > Display.getInstance().getDisplayWidth()) {
+            return anchorX - emblemWidth / 2;
+        }
+        return anchorX;
     }
 
     private boolean hasColorNear(Image img, int x, int y, int rgb) {
