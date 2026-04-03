@@ -192,6 +192,27 @@ class DialogTest extends UITestBase {
     }
 
     @FormTest
+    void staticShowWithCommandsAsButtonsKeepsLegacyBorderLayout() {
+        implementation.setBuiltinSoundsEnabled(false);
+        boolean originalMode = Dialog.isDefaultInteractionDialogMode();
+        boolean originalCommandsAsButtons = Dialog.isCommandsAsButtons();
+        try {
+            Dialog.setDefaultInteractionDialogMode(false);
+            Dialog.setCommandsAsButtons(true);
+            Command ok = new Command("OK");
+            assertDoesNotThrow(new org.junit.jupiter.api.function.Executable() {
+                @Override
+                public void execute() {
+                    Dialog.show("Legacy Buttons", "Body", new Command[]{ok}, Dialog.TYPE_INFO, null, 10);
+                }
+            }, "Static show() with command buttons should not fail due to FlowLayout constraints");
+        } finally {
+            Dialog.setCommandsAsButtons(originalCommandsAsButtons);
+            Dialog.setDefaultInteractionDialogMode(originalMode);
+        }
+    }
+
+    @FormTest
     void popupDialogCanBeDisposedFromBackground() throws Exception {
         implementation.setBuiltinSoundsEnabled(false);
         Dialog dialog = new Dialog("Popup", new BorderLayout());
