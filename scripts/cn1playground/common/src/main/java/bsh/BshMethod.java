@@ -27,7 +27,6 @@
 package bsh;
 
 import java.io.Serializable;
-import java.util.Arrays;
 
 /**
     This represents an instance of a bsh method declaration in a particular
@@ -592,8 +591,15 @@ public class BshMethod implements Serializable, Cloneable, BshClassManager.Liste
     /** {@inheritDoc} */
     @Override
     public void classLoaderChanged() {
-        reload = Reflect.isGeneratedClass(creturnType)
-            || Arrays.asList(cparamTypes).stream()
-                .anyMatch(Reflect::isGeneratedClass);
+        reload = Reflect.isGeneratedClass(creturnType);
+        if (reload || cparamTypes == null) {
+            return;
+        }
+        for (Class<?> paramType : cparamTypes) {
+            if (Reflect.isGeneratedClass(paramType)) {
+                reload = true;
+                return;
+            }
+        }
     }
 }

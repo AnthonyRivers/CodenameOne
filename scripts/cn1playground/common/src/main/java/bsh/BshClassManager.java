@@ -2,7 +2,6 @@ package bsh;
 
 import bsh.cn1.CN1AccessRegistry;
 import java.io.InputStream;
-import java.io.PrintWriter;
 import java.util.Collections;
 import java.util.Hashtable;
 import java.util.Map;
@@ -118,7 +117,7 @@ public class BshClassManager {
     protected String getClassNameByUnqName(String name) throws UtilEvalError { throw cmUnavailable(); }
     public void addListener(Listener l) {}
     public void removeListener(Listener l) {}
-    public void dump(PrintWriter pw) { pw.println("BshClassManager: reduced CN1 runtime."); }
+    public void dump() {}
     public Class<?> defineClass(String name, byte[] code) { throw new InterpreterError("Class generation is disabled."); }
     protected void classLoaderChanged() {}
 

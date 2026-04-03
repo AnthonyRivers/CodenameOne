@@ -25,7 +25,14 @@ class SecurityError extends UtilEvalError {
         List<String> typesString = new ArrayList<String>();
         for (Class<?> typeClass: Types.getTypes(args))
             typesString.add(typeClass != null ? Types.prettyName(typeClass) : "null");
-        return String.join(", ", typesString);
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < typesString.size(); i++) {
+            if (i > 0) {
+                out.append(", ");
+            }
+            out.append(typesString.get(i));
+        }
+        return out.toString();
     }
 
     /** Create a error for when can't construct a instance */

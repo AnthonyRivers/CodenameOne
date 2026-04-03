@@ -1,12 +1,11 @@
 package bsh;
 
-import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 
 /** Reduced UTF-8 reader wrapper for CN1 runtime use. */
 final public class FileReader extends InputStreamReader {
-    public FileReader(String path) throws FileNotFoundException {
+    public FileReader(String path) {
         this(openUnsupported(path));
     }
 
@@ -14,7 +13,7 @@ final public class FileReader extends InputStreamReader {
         super(in);
     }
 
-    private static InputStream openUnsupported(String path) throws FileNotFoundException {
-        throw new FileNotFoundException("File access is disabled in the reduced CN1 runtime: " + path);
+    private static InputStream openUnsupported(String path) {
+        throw new UnsupportedOperationException("File access is disabled in the reduced CN1 runtime: " + path);
     }
 }
