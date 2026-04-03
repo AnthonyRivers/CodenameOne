@@ -758,6 +758,13 @@ public class JavaSEPort extends CodenameOneImplementation {
     private boolean disconnectedMode;
 
     private static boolean exposeFilesystem;
+
+    private ComponentTreeInspector getOrCreateComponentTreeInspector() {
+        if (componentTreeInspector == null) {
+            componentTreeInspector = new ComponentTreeInspector();
+        }
+        return componentTreeInspector;
+    }
     private boolean scrollWheeling;
     
     private JComponent textCmp;
@@ -1863,8 +1870,9 @@ public class JavaSEPort extends CodenameOneImplementation {
         }
 
         private boolean showContextMenu(final MouseEvent me) {
-            if (componentTreeInspector == null ||
-                    !componentTreeInspector.isSimulatorRightClickEnabled() ||
+            ComponentTreeInspector inspector = getOrCreateComponentTreeInspector();
+            if (inspector == null ||
+                    !inspector.isSimulatorRightClickEnabled() ||
                     !CN.isSimulator()) {
                 return false;
             }
@@ -1886,13 +1894,14 @@ public class JavaSEPort extends CodenameOneImplementation {
 
                 @Override
                 public void actionPerformed(ActionEvent e) {
-                    if (componentTreeInspector != null && componentTreeInspector.isSimulatorRightClickEnabled()) {
+                    ComponentTreeInspector inspector = getOrCreateComponentTreeInspector();
+                    if (inspector != null && inspector.isSimulatorRightClickEnabled()) {
                         Form f = Display.getInstance().getCurrent();
                         if (f != null) {
                             int x = scaleCoordinateX(me.getX());
                             int y = scaleCoordinateY(me.getY());
                             Component cmp = f.getComponentAt(x, y);
-                            componentTreeInspector.inspectComponent(cmp);
+                            inspector.inspectComponent(cmp);
                         }
                     }
                 }
@@ -4025,7 +4034,7 @@ public class JavaSEPort extends CodenameOneImplementation {
             public void actionPerformed(ActionEvent ae) {
                 if (appFrame != null) return;
 
-                new ComponentTreeInspector().showInFrame();
+                getOrCreateComponentTreeInspector().showInFrame();
             }
         });
 
