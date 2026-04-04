@@ -64,9 +64,16 @@ public final class Reflect {
             }
         }
         if (object instanceof Class) {
+            Class<?> classObject = (Class<?>) object;
+            if ("getName".equals(methodName) && (args == null || args.length == 0)) {
+                return classObject.getName();
+            }
+            if ("getSimpleName".equals(methodName) && (args == null || args.length == 0)) {
+                return classObject.getSimpleName();
+            }
             try {
                 return invokeStaticMethod(interpreter == null ? null : interpreter.getClassManager(),
-                        (Class<?>) object, methodName, args, callerInfo, callstack);
+                        classObject, methodName, args, callerInfo, callstack);
             } catch (ReflectError e) {
                 throw new EvalError(e.getMessage(), callerInfo, callstack, e);
             } catch (UtilEvalError e) {
