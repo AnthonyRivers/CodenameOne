@@ -114,6 +114,7 @@ import com.codename1.util.Simd;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
 import java.util.Collections;
 import com.codename1.ui.plaf.DefaultLookAndFeel;
 
@@ -323,7 +324,12 @@ public class IOSImplementation extends CodenameOneImplementation {
     }
 
     public boolean isTablet() {
-        return nativeInstance.isTablet();
+        return isDesktop() || nativeInstance.isTablet();
+    }
+
+    @Override
+    public boolean isDesktop() {
+        return nativeInstance.isRunningOnMac();
     }
     
     @Override
@@ -811,7 +817,21 @@ public class IOSImplementation extends CodenameOneImplementation {
             stopTextEditing();
         }
         super.setCurrentForm(f);
+        syncMacWindowAppearance(f);
+    }
 
+    private Boolean lastMacWindowDark;
+    private void syncMacWindowAppearance(Form f) {
+        if (f == null || !isDesktop()) return;
+        int bg = f.getContentPane().getStyle().getBgColor();
+        int r = (bg >> 16) & 0xff;
+        int g = (bg >> 8) & 0xff;
+        int b = bg & 0xff;
+        int luma = (r * 299 + g * 587 + b * 114) / 1000;
+        boolean dark = luma < 128;
+        if (lastMacWindowDark != null && lastMacWindowDark.booleanValue() == dark) return;
+        lastMacWindowDark = Boolean.valueOf(dark);
+        nativeInstance.setMacWindowDarkAppearance(dark);
     }
 
     @Override
@@ -1207,6 +1227,14 @@ public class IOSImplementation extends CodenameOneImplementation {
     public void flushGraphics(int x, int y, int width, int height) {
         globalGraphics.clipApplied = false;
         flushBuffer(0, x, y, width, height);
+        if (isDesktop()) {
+            // Form-show isn't the only path that changes dark mode -- a theme
+            // refresh or a system appearance toggle re-styles the contentPane
+            // without dropping a new Form on the EDT. Re-check after every
+            // flush so the host NSWindow titlebar tracks the live form.
+            // syncMacWindowAppearance is no-op when the state hasn't changed.
+            syncMacWindowAppearance(Display.getInstance().getCurrent());
+        }
     }
 
     private final static int[] singleDimensionX = new int[1];
@@ -1248,6 +1276,87 @@ public class IOSImplementation extends CodenameOneImplementation {
         super.pointerDragged(x, y);
     }
 
+    // Sentinel keycodes forwarded from the native iOS hardware-keyboard handler
+    // for non-printable keys. Values match Android's DROID_IMPL_KEY_* sentinels
+    // so apps can write platform-agnostic key handlers.
+    static final int IOS_IMPL_KEY_LEFT = -23446;
+    static final int IOS_IMPL_KEY_RIGHT = -23447;
+    static final int IOS_IMPL_KEY_UP = -23448;
+    static final int IOS_IMPL_KEY_DOWN = -23449;
+    static final int IOS_IMPL_KEY_FIRE = -23450;
+    static final int IOS_IMPL_KEY_BACKSPACE = -23453;
+    static final int IOS_IMPL_KEY_ENTER = -23460;
+    static final int IOS_IMPL_KEY_TAB = -23461;
+    static final int IOS_IMPL_KEY_ESCAPE = -23462;
+    static final int IOS_IMPL_KEY_HOME = -23463;
+    static final int IOS_IMPL_KEY_END = -23464;
+    static final int IOS_IMPL_KEY_PAGE_UP = -23465;
+    static final int IOS_IMPL_KEY_PAGE_DOWN = -23466;
+    static final int IOS_IMPL_KEY_INSERT = -23467;
+    static final int IOS_IMPL_KEY_FORWARD_DEL = -23468;
+    static final int IOS_IMPL_KEY_F1 = -23469;
+    static final int IOS_IMPL_KEY_F2 = -23470;
+    static final int IOS_IMPL_KEY_F3 = -23471;
+    static final int IOS_IMPL_KEY_F4 = -23472;
+    static final int IOS_IMPL_KEY_F5 = -23473;
+    static final int IOS_IMPL_KEY_F6 = -23474;
+    static final int IOS_IMPL_KEY_F7 = -23475;
+    static final int IOS_IMPL_KEY_F8 = -23476;
+    static final int IOS_IMPL_KEY_F9 = -23477;
+    static final int IOS_IMPL_KEY_F10 = -23478;
+    static final int IOS_IMPL_KEY_F11 = -23479;
+    static final int IOS_IMPL_KEY_F12 = -23480;
+
+    public static void keyPressedCallback(int keyCode) {
+        if (dropEvents) {
+            return;
+        }
+        Display.getInstance().keyPressed(keyCode);
+    }
+
+    public static void keyReleasedCallback(int keyCode) {
+        if (dropEvents) {
+            return;
+        }
+        Display.getInstance().keyReleased(keyCode);
+    }
+
+    public static void pointerHoverPressedCallback(int x, int y) {
+        if (dropEvents) {
+            return;
+        }
+        singleDimensionX[0] = x; singleDimensionY[0] = y;
+        instance.pointerHoverPressed(singleDimensionX, singleDimensionY);
+    }
+
+    public static void pointerHoverCallback(int x, int y) {
+        if (dropEvents) {
+            return;
+        }
+        singleDimensionX[0] = x; singleDimensionY[0] = y;
+        instance.pointerHover(singleDimensionX, singleDimensionY);
+    }
+
+    public static void pointerHoverReleasedCallback(int x, int y) {
+        if (dropEvents) {
+            return;
+        }
+        singleDimensionX[0] = x; singleDimensionY[0] = y;
+        instance.pointerHoverReleased(singleDimensionX, singleDimensionY);
+    }
+
+    protected void pointerHover(final int[] x, final int[] y) {
+        super.pointerHover(x, y);
+    }
+
+    protected void pointerHoverPressed(final int[] x, final int[] y) {
+        super.pointerHoverPressed(x, y);
+    }
+
+    protected void pointerHoverReleased(final int[] x, final int[] y) {
+        super.pointerHoverReleased(x, y);
+    }
+
     static void sizeChangedImpl(int w, int h) {
         instance.sizeChanged(w, h);
     }
@@ -1268,6 +1377,21 @@ public class IOSImplementation extends CodenameOneImplementation {
     @Override
     public boolean isVPNActive() {
         return nativeInstance.isVPNActive();
+    }
+
+    @Override
+    protected com.codename1.io.wifi.WifiPlatform createWifiPlatform() {
+        return new IOSWifiPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.bonjour.BonjourPlatform createBonjourPlatform() {
+        return new IOSBonjourPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.NetworkTypePlatform createNetworkTypePlatform() {
+        return new IOSNetworkTypePlatform();
     }
 
     @Override
@@ -1639,8 +1763,19 @@ public class IOSImplementation extends CodenameOneImplementation {
         Rectangle bounds = shape.getBounds();
         if ( shape.isRectangle() || bounds.getWidth() <= 0 || bounds.getHeight() <= 0){
             setNativeClippingGlobal(bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(), true);
-        } else if (shape.isPolygon()) {
-            int pointsSize = shape.getPointsSize();
+            return;
+        }
+        // Curved clips (anything containing QUADTO / CUBICTO) get
+        // flattened first so the polygon path below sees real polyline
+        // vertices instead of interleaved control / anchor pairs. Without
+        // this, setClip(circularPath) reaches the native side as 17 raw
+        // floats that include 8 outside-the-curve control points, and
+        // the triangle-fan stencil writer turns the circle into the
+        // visible "triangle clip" on gradient_circle.svg and
+        // clipped_badge.svg (see SVGStaticScreenshotTest).
+        ClipShape polyShape = flattenClipShapeIfNeeded(shape);
+        if (polyShape.isPolygon()) {
+            int pointsSize = polyShape.getPointsSize();
             // Reallocate when the buffer doesn't EXACTLY match -- previously
             // this only reallocated when undersized, so a smaller polygon
             // reused a larger buffer and the trailing slots retained the
@@ -1653,23 +1788,27 @@ public class IOSImplementation extends CodenameOneImplementation {
             if (polygonPointsBuffer == null || polygonPointsBuffer.length != pointsSize) {
                 polygonPointsBuffer = new float[pointsSize];
             }
-            shapeToPolygon(shape, polygonPointsBuffer);
+            shapeToPolygon(polyShape, polygonPointsBuffer);
             nativeInstance.setNativeClippingPolygonGlobal(polygonPointsBuffer);
         } else {
-            
+            // The path didn't reduce to a polygon (still has multiple
+            // disjoint sub-paths or other oddities). Fall back to the
+            // alpha-mask Renderer; on the GL backend this paints the
+            // shape into the stencil, on the Metal backend the texture
+            // handle isn't compatible with MTLTexture and the bounding
+            // box is used as a coarse fallback (see ClipRect.m).
             TextureAlphaMask mask = (TextureAlphaMask)textureCache.get(shape, null);
             if ( mask == null ){
                 mask = (TextureAlphaMask)this.createAlphaMask(shape, null);
                 textureCache.add(shape, null, mask);
             }
-            
+
            if ( mask != null ){
-               //Log.p("Setting native clipping mask global with bounds "+mask.getBounds()+" : "+shape);
                 nativeInstance.setNativeClippingMaskGlobal(mask.getTextureName(), mask.getBounds().getX(), mask.getBounds().getY(), mask.getBounds().getWidth(), mask.getBounds().getHeight());
             } else {
                Log.p("Failed to create texture mask for clipping region");
             }
-            
+
         }
     }
 
@@ -2221,7 +2360,184 @@ public class IOSImplementation extends CodenameOneImplementation {
             throw new RuntimeException("shapeToPolygon requires out array at least the size of the points in the polygon.  Requires "+size+" but found "+pointsOut.length);
         }
         shape.getPoints(pointsOut);
-        
+
+    }
+
+    // Reusable buffer for flattening curves into a polyline GeneralPath
+    // before handing the clip down to the native polygon path. Reused
+    // across clip applications to avoid per-frame allocation.
+    private GeneralPath flattenedClipPath;
+    private ClipShape flattenedClipShape;
+
+    /// Walks `src` and builds a polyline GeneralPath in `dst` by replacing
+    /// every QUADTO / CUBICTO with a chain of straight LINETO segments
+    /// produced by midpoint subdivision. The native iOS clip pipeline
+    /// (GL ES2 FillPolygon and Metal CN1MetalApplyPolygonStencilClip) both
+    /// consume their input as a flat polygon: the only points they look
+    /// at are the (x, y) pairs in the buffer. When the source path is a
+    /// curve (e.g. a circle built from arc() emits 8 quadTos) the raw
+    /// points buffer contains alternating control / anchor pairs, and the
+    /// stencil writer treats every control point as a real polygon
+    /// vertex. The result is the degenerate "triangle clip" described in
+    /// the SVG tests on gradient_circle.svg / clipped_badge.svg. Flatten
+    /// first so only true vertices survive.
+    private void flattenShapeToPolyline(Shape src, GeneralPath dst) {
+        dst.reset();
+        PathIterator it = src.getPathIterator();
+        dst.setWindingRule(it.getWindingRule());
+        float[] coords = new float[6];
+        float curX = 0f, curY = 0f, moveX = 0f, moveY = 0f;
+        while (!it.isDone()) {
+            int seg = it.currentSegment(coords);
+            switch (seg) {
+                case PathIterator.SEG_MOVETO:
+                    dst.moveTo(coords[0], coords[1]);
+                    curX = moveX = coords[0];
+                    curY = moveY = coords[1];
+                    break;
+                case PathIterator.SEG_LINETO:
+                    dst.lineTo(coords[0], coords[1]);
+                    curX = coords[0];
+                    curY = coords[1];
+                    break;
+                case PathIterator.SEG_QUADTO:
+                    flattenQuadInto(dst, curX, curY, coords[0], coords[1], coords[2], coords[3], 0);
+                    curX = coords[2];
+                    curY = coords[3];
+                    break;
+                case PathIterator.SEG_CUBICTO:
+                    flattenCubicInto(dst, curX, curY,
+                            coords[0], coords[1], coords[2], coords[3], coords[4], coords[5], 0);
+                    curX = coords[4];
+                    curY = coords[5];
+                    break;
+                case PathIterator.SEG_CLOSE:
+                    dst.closePath();
+                    curX = moveX;
+                    curY = moveY;
+                    break;
+            }
+            it.next();
+        }
+    }
+
+    // Squared distance threshold (in user-space units) for the
+    // subdivision flatness test. 0.25 px is well below 1 device pixel
+    // even after the typical retina upscale and matches the precision of
+    // the alpha-mask Renderer used by the rest of the iOS port.
+    private static final float FLATTEN_TOLERANCE_SQ = 0.25f * 0.25f;
+    // Safety cap on the recursion depth. 18 = 2^18 sub-segments which is
+    // far past anything a real SVG path needs; the flatness test should
+    // always converge well before this.
+    private static final int FLATTEN_MAX_DEPTH = 18;
+
+    private static void flattenQuadInto(GeneralPath dst,
+                                        float x0, float y0,
+                                        float x1, float y1,
+                                        float x2, float y2,
+                                        int depth) {
+        // Distance from the control point to the chord P0-P2. For a
+        // quadratic Bezier the maximum deviation between the curve and
+        // its chord is bounded by half the control-point-to-chord
+        // distance, so testing the control point against the threshold
+        // is a safe (slightly conservative) flatness criterion.
+        float dx = x2 - x0;
+        float dy = y2 - y0;
+        float lenSq = dx * dx + dy * dy;
+        float distSq;
+        if (lenSq < 1e-6f) {
+            distSq = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
+        } else {
+            float cross = (x1 - x0) * dy - (y1 - y0) * dx;
+            distSq = (cross * cross) / lenSq;
+        }
+        if (distSq <= FLATTEN_TOLERANCE_SQ || depth >= FLATTEN_MAX_DEPTH) {
+            dst.lineTo(x2, y2);
+            return;
+        }
+        float mx1 = (x0 + x1) * 0.5f, my1 = (y0 + y1) * 0.5f;
+        float mx2 = (x1 + x2) * 0.5f, my2 = (y1 + y2) * 0.5f;
+        float mx = (mx1 + mx2) * 0.5f, my = (my1 + my2) * 0.5f;
+        flattenQuadInto(dst, x0, y0, mx1, my1, mx, my, depth + 1);
+        flattenQuadInto(dst, mx, my, mx2, my2, x2, y2, depth + 1);
+    }
+
+    private static void flattenCubicInto(GeneralPath dst,
+                                         float x0, float y0,
+                                         float x1, float y1,
+                                         float x2, float y2,
+                                         float x3, float y3,
+                                         int depth) {
+        // Max distance from either inner control point to the chord
+        // P0-P3. A cubic curve never strays farther than its furthest
+        // control point from its chord, so the larger of the two
+        // perpendicular distances is a conservative flatness bound.
+        float dx = x3 - x0;
+        float dy = y3 - y0;
+        float lenSq = dx * dx + dy * dy;
+        float d1Sq, d2Sq;
+        if (lenSq < 1e-6f) {
+            d1Sq = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
+            d2Sq = (x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0);
+        } else {
+            float c1 = (x1 - x0) * dy - (y1 - y0) * dx;
+            float c2 = (x2 - x0) * dy - (y2 - y0) * dx;
+            d1Sq = (c1 * c1) / lenSq;
+            d2Sq = (c2 * c2) / lenSq;
+        }
+        float distSq = d1Sq > d2Sq ? d1Sq : d2Sq;
+        if (distSq <= FLATTEN_TOLERANCE_SQ || depth >= FLATTEN_MAX_DEPTH) {
+            dst.lineTo(x3, y3);
+            return;
+        }
+        float mx01 = (x0 + x1) * 0.5f, my01 = (y0 + y1) * 0.5f;
+        float mx12 = (x1 + x2) * 0.5f, my12 = (y1 + y2) * 0.5f;
+        float mx23 = (x2 + x3) * 0.5f, my23 = (y2 + y3) * 0.5f;
+        float mxA = (mx01 + mx12) * 0.5f, myA = (my01 + my12) * 0.5f;
+        float mxB = (mx12 + mx23) * 0.5f, myB = (my12 + my23) * 0.5f;
+        float mx = (mxA + mxB) * 0.5f, my = (myA + myB) * 0.5f;
+        flattenCubicInto(dst, x0, y0, mx01, my01, mxA, myA, mx, my, depth + 1);
+        flattenCubicInto(dst, mx, my, mxB, myB, mx23, my23, x3, y3, depth + 1);
+    }
+
+    // True if the path has only MOVETO / LINETO / CLOSE segments, i.e.
+    // it is already a polyline and flattening would just copy it.
+    private boolean isAlreadyFlat(Shape s) {
+        if (s instanceof ClipShape && ((ClipShape) s).isRect()) {
+            return true;
+        }
+        PathIterator it = s.getPathIterator();
+        float[] coords = new float[6];
+        while (!it.isDone()) {
+            int seg = it.currentSegment(coords);
+            if (seg == PathIterator.SEG_QUADTO || seg == PathIterator.SEG_CUBICTO) {
+                return false;
+            }
+            it.next();
+        }
+        return true;
+    }
+
+    // Flatten if necessary and return the ClipShape that should be sent
+    // through the native polygon clip path. When the input is already a
+    // polyline (the common case for rectangular clipRect intersections
+    // built by NativeGraphics.clipRect) the input is returned as-is. The
+    // returned ClipShape is reused across calls (not shared with the
+    // input), so callers must finish reading from it before the next
+    // clip is applied.
+    private ClipShape flattenClipShapeIfNeeded(ClipShape src) {
+        if (isAlreadyFlat(src)) {
+            return src;
+        }
+        if (flattenedClipPath == null) {
+            flattenedClipPath = new GeneralPath();
+        }
+        flattenShapeToPolyline(src, flattenedClipPath);
+        if (flattenedClipShape == null) {
+            flattenedClipShape = new ClipShape();
+        }
+        flattenedClipShape.setShape(flattenedClipPath, null);
+        return flattenedClipShape;
     }
     /*
     public void drawConvexPolygon(Object graphics, Shape shape, Stroke stroke, int color, int alpha){
@@ -3250,6 +3566,34 @@ public class IOSImplementation extends CodenameOneImplementation {
         
     }
     
+    private IOSBiometrics biometrics;
+    private IOSSecureStorage secureStorage;
+    private IOSNfc nfc;
+
+    @Override
+    public com.codename1.security.Biometrics getBiometrics() {
+        if (biometrics == null) {
+            biometrics = new IOSBiometrics(nativeInstance);
+        }
+        return biometrics;
+    }
+
+    @Override
+    public com.codename1.security.SecureStorage getSecureStorage() {
+        if (secureStorage == null) {
+            secureStorage = new IOSSecureStorage(nativeInstance);
+        }
+        return secureStorage;
+    }
+
+    @Override
+    public com.codename1.nfc.Nfc getNfc() {
+        if (nfc == null) {
+            nfc = new IOSNfc(nativeInstance);
+        }
+        return nfc;
+    }
+
     public LocationManager getLocationManager() {
         if (!nativeInstance.checkLocationUsage()) {
             throw new RuntimeException("Please add the ios.NSLocationUsageDescription or ios.NSLocationAlwaysUsageDescription build hint");
@@ -3354,6 +3698,11 @@ public class IOSImplementation extends CodenameOneImplementation {
         captureCallback.addListener(response);
         nativeInstance.captureCamera(false, 0, 0);
         dropEvents = true;
+    }
+
+    @Override
+    public com.codename1.impl.CameraImpl createCameraImpl() {
+        return new IOSCameraImpl();
     }
 
     @Override
@@ -4903,18 +5252,27 @@ public class IOSImplementation extends CodenameOneImplementation {
         }
         
         void setNativeClipping(ClipShape shape){
-            
+
             if (shape.isRect()) {
                 shape.getBounds(reusableRect);
                 setNativeClippingMutable(reusableRect.getX(), reusableRect.getY(), reusableRect.getWidth(), reusableRect.getHeight(), clipApplied);
-                
+
             } else {
-                int commandsLen = shape.getTypesSize();
-                int pointsLen = shape.getPointsSize();
+                // The native side (setNativeClippingShapeMutableImpl in
+                // CodenameOne_GLViewController.m) ignores the commands
+                // array and treats every (x, y) pair in the points buffer
+                // as a polygon vertex. For a path with curves that means
+                // control points appear as polygon vertices, producing
+                // the SVG "triangle clip" symptom for gradient_circle.svg
+                // and clipped_badge.svg. Flatten on the Java side so the
+                // points buffer contains only true polyline vertices.
+                ClipShape polyShape = flattenClipShapeIfNeeded(shape);
+                int commandsLen = polyShape.getTypesSize();
+                int pointsLen = polyShape.getPointsSize();
                 byte[] commandsArr = getTmpNativeDrawShape_commands(commandsLen);
                 float[] pointsArr = getTmpNativeDrawShape_coords(pointsLen);
-                shape.getTypes(commandsArr);
-                shape.getPoints(pointsArr);
+                polyShape.getTypes(commandsArr);
+                polyShape.getPoints(pointsArr);
                 nativeInstance.setNativeClippingMutable(commandsLen, commandsArr, pointsLen, pointsArr);
             }
         }
@@ -7578,7 +7936,77 @@ public class IOSImplementation extends CodenameOneImplementation {
         ng.applyClip();
         ng.fillLinearGradient(startColor, endColor, x, y, width, height, horizontal);
     }
-    
+
+    // Metal builds route the multi-stop CSS Gradient API through a pure-GPU
+    // shader (CN1MetalPipelineMultiStopGradient). GL builds (or Metal builds
+    // that can't pack the gradient into the shader's 8-stop budget) fall back
+    // to the base CodenameOneImplementation software rasterizer, which builds
+    // an ARGB raster via Gradient.sampleArgb() and uploads it through
+    // drawImage. The Java side caches that raster on the Gradient via a
+    // WeakReference so repaint storms don't re-rasterise. gaussianBlurImage
+    // wraps either the Metal-native two-pass blur or CIGaussianBlur for the
+    // filter:blur effect on Image inputs.
+    @Override
+    public void fillGradient(Object graphics, com.codename1.ui.Gradient gradient, int x, int y, int width, int height) {
+        if (gradient == null || width <= 0 || height <= 0) {
+            return;
+        }
+        if (metalRendering && gradient.getColors().length <= 8) {
+            NativeGraphics ng = (NativeGraphics) graphics;
+            ng.checkControl();
+            ng.applyTransform();
+            ng.applyClip();
+            int kind = gradient.getKind();
+            int[] argb = gradient.getColors();
+            float[] pos = gradient.getPositions();
+            int stopCount = argb.length;
+            float[] colors = new float[stopCount * 4];
+            for (int i = 0; i < stopCount; i++) {
+                int c = argb[i];
+                int a8 = (c >>> 24) & 0xff;
+                if (a8 == 0) {
+                    a8 = 0xff;
+                }
+                float a = a8 / 255f;
+                colors[i * 4] = ((c >> 16) & 0xff) / 255f * a;
+                colors[i * 4 + 1] = ((c >> 8) & 0xff) / 255f * a;
+                colors[i * 4 + 2] = (c & 0xff) / 255f * a;
+                colors[i * 4 + 3] = a;
+            }
+            float angleOrFromAngle = 0f;
+            float cx = 0.5f;
+            float cy = 0.5f;
+            float rx = 0.5f;
+            float ry = 0.5f;
+            int shape = 1;
+            if (kind == com.codename1.ui.Gradient.KIND_LINEAR) {
+                angleOrFromAngle = ((com.codename1.ui.LinearGradient) gradient).getAngleDegrees();
+            } else if (kind == com.codename1.ui.Gradient.KIND_RADIAL) {
+                com.codename1.ui.RadialGradient rg = (com.codename1.ui.RadialGradient) gradient;
+                float[] geom = new float[4];
+                rg.computeRadii(width, height, geom);
+                cx = geom[0] / width;
+                cy = geom[1] / height;
+                rx = geom[2] / width;
+                ry = geom[3] / height;
+                shape = rg.getShape();
+            } else if (kind == com.codename1.ui.Gradient.KIND_CONIC) {
+                com.codename1.ui.ConicGradient cg = (com.codename1.ui.ConicGradient) gradient;
+                angleOrFromAngle = cg.getFromAngleDegrees();
+                cx = cg.getRelativeCenterX();
+                cy = cg.getRelativeCenterY();
+            }
+            boolean mutable = !(ng instanceof GlobalGraphics);
+            nativeInstance.fillGradient(kind, stopCount, pos, colors,
+                    gradient.getCycleMethod(), angleOrFromAngle,
+                    cx, cy, rx, ry, shape,
+                    x, y, width, height, mutable);
+            return;
+        }
+        super.fillGradient(graphics, gradient, x, y, width, height);
+    }
+
+
     public static void appendData(long peer, long data) {
         NetworkConnection n = null;
         synchronized(CONNECTIONS_LOCK) {
@@ -8125,7 +8553,15 @@ public class IOSImplementation extends CodenameOneImplementation {
      */
     public InputStream openInputStream(Object connection) throws IOException {
         if(connection instanceof String) {
-            BufferedInputStream o = new BufferedInputStream(new NSFileInputStream((String)connection), (String)connection);
+            // Match openFileInputStream(String): if the path is missing, throw
+            // a FileNotFoundException instead of silently opening an empty
+            // NSFileInputStream (which Apple's fileHandleForReadingAtPath:
+            // returns when the file does not exist). See #1502.
+            String path = (String) connection;
+            if(!nativeInstance.fileExists(path)) {
+                throw new FileNotFoundException("File not found: " + path);
+            }
+            BufferedInputStream o = new BufferedInputStream(new NSFileInputStream(path), path);
             return o;
         }
         NetworkConnection n = (NetworkConnection)connection;
@@ -8517,7 +8953,10 @@ public class IOSImplementation extends CodenameOneImplementation {
     public InputStream openFileInputStream(String file) throws IOException {
         file = unfile(file);
         if(!nativeInstance.fileExists(file)) {
-            throw new IOException("File not found: " + file);
+            // FileNotFoundException is more precise than IOException and
+            // matches what FileInputStream throws on JavaSE, so callers can
+            // distinguish "missing" from other I/O errors. See #1502.
+            throw new FileNotFoundException("File not found: " + file);
         }
         return new BufferedInputStream(new NSFileInputStream(file), file);
     }
@@ -9234,22 +9673,72 @@ public class IOSImplementation extends CodenameOneImplementation {
     
     @Override
     public void share(String text, String image, String mimeType, Rectangle sourceRect){
-        if(image != null && image.length() > 0) {
+        share(text, image, mimeType, sourceRect, null);
+    }
+
+    @Override
+    public void share(String text, String image, String mimeType, Rectangle sourceRect, com.codename1.share.ShareResultListener listener) {
+        long imagePeer = 0;
+        if (image != null && image.length() > 0) {
             try {
                 Image img = Image.createImage(image);
-                if(img == null) {
-                    nativeInstance.socialShare(text, 0, sourceRect );
+                if (img != null) {
+                    NativeImage n = (NativeImage) img.getImage();
+                    imagePeer = n.peer;
+                }
+            } catch (IOException err) {
+                err.printStackTrace();
+                if (listener != null) {
+                    listener.onResult(com.codename1.share.ShareResult.failed("Error loading image: " + image));
                     return;
                 }
-                NativeImage n = (NativeImage)img.getImage();
-                nativeInstance.socialShare(text, n.peer, sourceRect);
-            } catch(IOException err) {
-                err.printStackTrace();
                 Dialog.show("Error", "Error loading image: " + image, "OK", null);
+                return;
             }
-        } else {
-            nativeInstance.socialShare(text, 0, sourceRect);
         }
+        if (listener == null) {
+            nativeInstance.socialShare(text, imagePeer, sourceRect);
+            return;
+        }
+        int callbackId = registerShareCallback(listener);
+        nativeInstance.socialShareWithCallback(text, imagePeer, sourceRect, callbackId);
+    }
+
+    // Pending share-result callbacks. Native code invokes
+    // socialShareCallback(...) once per id.
+    private static final java.util.HashMap<Integer, com.codename1.share.ShareResultListener> pendingShareCallbacks = new java.util.HashMap<Integer, com.codename1.share.ShareResultListener>();
+    private static int nextShareCallbackId = 1;
+
+    private static synchronized int registerShareCallback(com.codename1.share.ShareResultListener l) {
+        int id = nextShareCallbackId++;
+        pendingShareCallbacks.put(Integer.valueOf(id), l);
+        return id;
+    }
+
+    /// Invoked from native code with the outcome of a share. Public so the
+    /// VM-emitted symbol stays stable. `status` matches
+    /// [com.codename1.share.ShareResult]: 1=SHARED_TO, 2=DISMISSED, 3=FAILED.
+    public static void socialShareCallback(int callbackId, int status, String activityType, String errorMessage) {
+        com.codename1.share.ShareResultListener listener;
+        synchronized (IOSImplementation.class) {
+            listener = pendingShareCallbacks.remove(Integer.valueOf(callbackId));
+        }
+        if (listener == null) {
+            return;
+        }
+        com.codename1.share.ShareResult result;
+        switch (status) {
+            case 1:
+                result = com.codename1.share.ShareResult.sharedTo(activityType);
+                break;
+            case 2:
+                result = com.codename1.share.ShareResult.dismissed();
+                break;
+            default:
+                result = com.codename1.share.ShareResult.failed(errorMessage);
+                break;
+        }
+        listener.onResult(result);
     }
 
     private Purchase pur;
@@ -10019,5 +10508,114 @@ public class IOSImplementation extends CodenameOneImplementation {
     @Override
     public void announceForAccessibility(final Component cmp, final String text) {
         IOSNative.announceForAccessibility(text);
+    }
+
+    // ================================================================
+    // Crypto bridge -- routes through CN1Crypto.{h,m} in nativeSources/
+    // (the corresponding native methods live on IOSNative). The defaults
+    // inherited from CodenameOneImplementation use java.security via
+    // reflection, which isn't on the ParparVM runtime classpath.
+
+    private static byte[] cryptoTrim(byte[] buf, int len) {
+        if (len < 0) {
+            throw new RuntimeException("crypto operation failed with code " + len);
+        }
+        if (len == buf.length) return buf;
+        byte[] out = new byte[len];
+        System.arraycopy(buf, 0, out, 0, len);
+        return out;
+    }
+
+    @Override
+    public void secureRandomBytes(byte[] out) {
+        nativeInstance.secureRandomBytes(out);
+    }
+
+    @Override
+    public byte[] aesEncrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] plaintext) {
+        return doAes(transformation, key, iv, aad, plaintext, 1);
+    }
+
+    @Override
+    public byte[] aesDecrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] ciphertext) {
+        return doAes(transformation, key, iv, aad, ciphertext, 0);
+    }
+
+    private byte[] doAes(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] input, int encrypt) {
+        String t = transformation == null ? "" : transformation.toUpperCase();
+        if (t.indexOf("GCM") >= 0) {
+            // Encrypt output = ciphertext + 16-byte tag; decrypt output is
+            // the same length as the ciphertext minus the tag.
+            int outLen = encrypt == 1 ? input.length + 16 : Math.max(0, input.length - 16);
+            byte[] outBuf = new byte[outLen];
+            int written = nativeInstance.aesGcm(encrypt, key, iv, aad, input, outBuf);
+            return cryptoTrim(outBuf, written);
+        }
+        boolean padded = t.indexOf("NOPADDING") < 0;
+        // CBC ciphertext is at most input + one extra block (16 bytes).
+        int outLen = input.length + 16;
+        byte[] outBuf = new byte[outLen];
+        int written = nativeInstance.aesCbc(encrypt, key, iv, input, outBuf, padded ? 1 : 0);
+        return cryptoTrim(outBuf, written);
+    }
+
+    @Override
+    public byte[] rsaEncrypt(String transformation, byte[] publicKeyX509, byte[] plaintext) {
+        int padding = rsaPaddingKind(transformation);
+        // Modern key sizes never exceed 2048 bytes of output.
+        byte[] outBuf = new byte[2048];
+        int written = nativeInstance.rsaEncrypt(padding, publicKeyX509, plaintext, outBuf);
+        return cryptoTrim(outBuf, written);
+    }
+
+    @Override
+    public byte[] rsaDecrypt(String transformation, byte[] privateKeyPkcs8, byte[] ciphertext) {
+        int padding = rsaPaddingKind(transformation);
+        byte[] outBuf = new byte[2048];
+        int written = nativeInstance.rsaDecrypt(padding, privateKeyPkcs8, ciphertext, outBuf);
+        return cryptoTrim(outBuf, written);
+    }
+
+    private static int rsaPaddingKind(String transformation) {
+        if (transformation == null) return 1;
+        return transformation.toUpperCase().indexOf("OAEP") >= 0 ? 2 : 1;
+    }
+
+    @Override
+    public byte[] cryptoSign(String algorithm, String keyAlgorithm, byte[] privateKeyPkcs8, byte[] data) {
+        int alg = signatureAlgorithmKind(algorithm);
+        byte[] outBuf = new byte[2048];
+        int written = nativeInstance.sign(alg, privateKeyPkcs8, data, outBuf);
+        return cryptoTrim(outBuf, written);
+    }
+
+    @Override
+    public boolean cryptoVerify(String algorithm, String keyAlgorithm, byte[] publicKeyX509, byte[] data, byte[] signature) {
+        int alg = signatureAlgorithmKind(algorithm);
+        int rc = nativeInstance.verify(alg, publicKeyX509, data, signature);
+        if (rc < 0) throw new RuntimeException("verify failed: code " + rc);
+        return rc == 1;
+    }
+
+    private static int signatureAlgorithmKind(String algorithm) {
+        if ("SHA256withRSA".equals(algorithm)) return 0;
+        if ("SHA384withRSA".equals(algorithm)) return 1;
+        if ("SHA512withRSA".equals(algorithm)) return 2;
+        if ("SHA256withECDSA".equals(algorithm)) return 3;
+        if ("SHA384withECDSA".equals(algorithm)) return 4;
+        if ("SHA512withECDSA".equals(algorithm)) return 5;
+        throw new RuntimeException("unsupported signature algorithm: " + algorithm);
+    }
+
+    @Override
+    public byte[][] generateRsaKeyPair(int bits) {
+        // 4096-bit RSA produces ~600 bytes of DER for the public side and
+        // ~2300 for the private; round up generously.
+        byte[] pubBuf = new byte[bits + 1024];
+        byte[] privBuf = new byte[bits * 3];
+        int[] lens = new int[2];
+        int rc = nativeInstance.generateRsaKeyPair(bits, pubBuf, privBuf, lens);
+        if (rc < 0) throw new RuntimeException("RSA keypair generation failed: code " + rc);
+        return new byte[][]{ cryptoTrim(pubBuf, lens[0]), cryptoTrim(privBuf, lens[1]) };
     }
 }

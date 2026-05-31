@@ -96,6 +96,8 @@ import com.codename1.io.Util;
 import com.codename1.l10n.L10NManager;
 import com.codename1.location.Location;
 import com.codename1.location.LocationManager;
+import com.codename1.security.Biometrics;
+import com.codename1.security.SecureStorage;
 import com.codename1.media.AbstractMedia;
 import com.codename1.media.AudioBuffer;
 import com.codename1.media.Media;
@@ -755,6 +757,14 @@ public class JavaSEPort extends CodenameOneImplementation {
     static final int GAME_KEY_CODE_RIGHT = -94;
     private static String nativeTheme;
     private static Resources nativeThemeRes;
+    /**
+     * The simulatorNativeTheme value that {@link #loadSkinFile(InputStream, JFrame)}
+     * last applied as the native-theme override. Useful for tests that
+     * need to verify the "Native Theme" menu's selection actually took
+     * effect on simulator reload. Null when no explicit override was
+     * resolved (e.g. the skin's embedded theme is in use).
+     */
+    private static String currentSimulatorNativeTheme;
     private static int softkeyCount = 1;
     private static boolean tablet;
     private static String DEFAULT_FONT = "Arial-plain-11";
@@ -1211,6 +1221,17 @@ public class JavaSEPort extends CodenameOneImplementation {
     
     public static Resources getNativeTheme() {
         return nativeThemeRes;
+    }
+
+    /**
+     * Returns the resolved native-theme override key (e.g.
+     * "iOSModernTheme") that the simulator's last {@code loadSkinFile}
+     * applied, or null when no override was active. Used by tests to
+     * verify that the "Native Theme" menu's selection actually flowed
+     * through the simulator reload path.
+     */
+    public static String getCurrentSimulatorNativeTheme() {
+        return currentSimulatorNativeTheme;
     }
 
     public boolean hasNativeTheme() {
@@ -2749,9 +2770,161 @@ public class JavaSEPort extends CodenameOneImplementation {
         }
     }
 
-    
-    
-    
+    // -----------------------------------------------------------------
+    // Simulator AI helpers: Ollama detection + best-effort TTS via OS
+    // command. These run only on JavaSE; mobile platforms get proper
+    // native impls in their own ports.
+    // -----------------------------------------------------------------
+
+    private static volatile boolean cn1AiOllamaProbeStarted;
+
+    /// Fires a quick TCP probe at the loopback Ollama port. Sets the
+    /// `cn1.ai.ollamaDetected` system property to `"true"` when the
+    /// server is reachable so [com.codename1.ai.LlmClient]'s
+    /// simulator-redirect can route there automatically.
+    private static void probeOllamaAsync() {
+        if (cn1AiOllamaProbeStarted) {
+            return;
+        }
+        cn1AiOllamaProbeStarted = true;
+        Thread t = new Thread(new Runnable() {
+            public void run() {
+                java.net.Socket s = null;
+                try {
+                    s = new java.net.Socket();
+                    s.connect(new java.net.InetSocketAddress("127.0.0.1", 11434), 250);
+                    System.setProperty("cn1.ai.ollamaDetected", "true");
+                    com.codename1.io.Log.p("Ollama detected at localhost:11434 -- "
+                            + "set cn1.ai.simulatorRedirect=ollama to route LlmClient calls locally.");
+                } catch (Throwable ignored) {
+                    // Not running; that's the normal case.
+                } finally {
+                    if (s != null) {
+                        try { s.close(); } catch (Throwable ignored) {}
+                    }
+                }
+            }
+        }, "cn1-ai-ollama-probe");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    @Override
+    public boolean textToSpeechIsSupported() {
+        // On macOS the `say` binary ships with the OS. On Linux we
+        // require `espeak`/`espeak-ng` to be installed. On Windows
+        // we shell out to PowerShell's System.Speech (XP+). Detect
+        // lazily on first call so startup cost stays at zero for
+        // apps that never use TTS.
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        if (os.contains("mac")) {
+            return true;
+        }
+        if (os.contains("win")) {
+            return true;
+        }
+        if (os.contains("linux") || os.contains("nix") || os.contains("nux")) {
+            return probeBinary("espeak") || probeBinary("espeak-ng");
+        }
+        return false;
+    }
+
+    @Override
+    public void textToSpeechSpeak(final String text, final com.codename1.media.TtsOptions options) {
+        if (text == null || text.length() == 0) {
+            return;
+        }
+        Thread t = new Thread(new Runnable() {
+            public void run() {
+                String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+                java.util.List<String> cmd = new java.util.ArrayList<String>();
+                if (os.contains("mac")) {
+                    cmd.add("say");
+                    if (options != null && options.getVoiceId() != null) {
+                        cmd.add("-v");
+                        cmd.add(options.getVoiceId());
+                    }
+                    cmd.add(text);
+                } else if (os.contains("win")) {
+                    String escaped = text.replace("'", "''");
+                    cmd.add("powershell");
+                    cmd.add("-Command");
+                    cmd.add("Add-Type -AssemblyName System.Speech; "
+                            + "(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('"
+                            + escaped + "')");
+                } else {
+                    cmd.add(probeBinary("espeak-ng") ? "espeak-ng" : "espeak");
+                    cmd.add(text);
+                }
+                try {
+                    new ProcessBuilder(cmd).inheritIO().start().waitFor();
+                } catch (Throwable err) {
+                    com.codename1.io.Log.p("TTS failed: " + err.getMessage());
+                }
+            }
+        }, "cn1-tts");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    @Override
+    public void textToSpeechStop() {
+        // Best-effort: kill any active `say` / `espeak`. On Windows
+        // we can't reach the spawned PowerShell process easily; for
+        // most desktop workflows that's acceptable since utterances
+        // are typically short.
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        try {
+            if (os.contains("mac")) {
+                new ProcessBuilder("killall", "say").redirectErrorStream(true).start();
+            } else if (os.contains("linux") || os.contains("nix") || os.contains("nux")) {
+                new ProcessBuilder("pkill", "-x", "espeak").redirectErrorStream(true).start();
+                new ProcessBuilder("pkill", "-x", "espeak-ng").redirectErrorStream(true).start();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @Override
+    public String[] textToSpeechAvailableVoices() {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        if (!os.contains("mac")) {
+            // `say -v ?` is the only one of the three platforms that
+            // exposes a structured voice list. Linux espeak's list
+            // is voluminous and not portable; Windows PowerShell
+            // SAPI list query is slow. Return empty rather than
+            // pretending.
+            return new String[0];
+        }
+        try {
+            Process p = new ProcessBuilder("say", "-v", "?").redirectErrorStream(true).start();
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(p.getInputStream(), "UTF-8"));
+            java.util.List<String> voices = new java.util.ArrayList<String>();
+            String line;
+            while ((line = r.readLine()) != null) {
+                int spaceIdx = line.indexOf(' ');
+                if (spaceIdx > 0) {
+                    voices.add(line.substring(0, spaceIdx));
+                }
+            }
+            p.waitFor();
+            return voices.toArray(new String[voices.size()]);
+        } catch (Throwable t) {
+            return new String[0];
+        }
+    }
+
+    private static boolean probeBinary(String name) {
+        try {
+            Process p = new ProcessBuilder("which", name).redirectErrorStream(true).start();
+            p.waitFor();
+            return p.exitValue() == 0;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private void loadSkinFile(InputStream skin, final JFrame frm) {
         try {
             ZipInputStream z = new ZipInputStream(skin);
@@ -2950,6 +3123,7 @@ public class JavaSEPort extends CodenameOneImplementation {
                 // Explicit "keep the skin's embedded theme".
                 overrideTheme = null;
             }
+            currentSimulatorNativeTheme = overrideTheme;
             if (overrideTheme != null) {
                 InputStream bundled = JavaSEPort.class.getResourceAsStream("/" + overrideTheme + ".res");
                 if (bundled != null) {
@@ -3130,6 +3304,64 @@ public class JavaSEPort extends CodenameOneImplementation {
             updateFrameUI();
 
         }
+    }
+
+    @Override
+    public boolean isPortrait() {
+        // When setSimulatorPortrait has been called explicitly (e.g. by the
+        // @Orientation JUnit annotation), honor that flag rather than the
+        // canvas-derived inference. The canvas inherits the host window's
+        // dimensions, which in unit-test JVMs almost always read as
+        // landscape regardless of what the test asked for.
+        if (simulatorPortraitExplicit) {
+            return portrait;
+        }
+        return super.isPortrait();
+    }
+
+    /**
+     * Programmatically flips the simulator between portrait and landscape
+     * without persisting the choice to user preferences. The menu's Rotate
+     * action goes through the private {@link #setPortrait(boolean)} helper
+     * (which does persist, since it is driven by an explicit user click);
+     * this entry point is meant for runtime / test callers that want the
+     * orientation state to last only for the current JVM &mdash; in
+     * particular the {@code @Orientation} JUnit annotation.
+     *
+     * <p>Sets an explicit-override flag so that {@link #isPortrait()} returns
+     * this value instead of inferring orientation from canvas dimensions.
+     * In tests the canvas inherits the host frame's size and the inference
+     * would otherwise read "landscape" on any wide screen.
+     *
+     * @param portraitValue true for portrait, false for landscape
+     */
+    public void setSimulatorPortrait(boolean portraitValue) {
+        simulatorPortraitExplicit = true;
+        if (portrait != portraitValue) {
+            portrait = portraitValue;
+            updateFrameUI();
+        }
+    }
+
+    private boolean simulatorPortraitExplicit = false;
+
+    /**
+     * Sets the simulator's accessibility text-scale multiplier. Does not
+     * persist the value to user preferences &mdash; the Simulate &gt;
+     * Larger Text menu remains the only restart-stable source of truth.
+     * Does not refresh the active theme either; the caller decides when
+     * to redraw (the {@code @LargerText} JUnit annotation, for instance,
+     * batches several config changes and then issues one refresh).
+     *
+     * <p>A value of {@code 1.0f} restores the default size; values like
+     * {@code 1.3f}, {@code 1.6f}, {@code 2.0f} mirror the menu's
+     * "AX2 / AX3 / AX5" presets.
+     *
+     * @param scale text-scale multiplier; {@code 1.0f} for default
+     */
+    public void setSimulatorLargerTextScale(float scale) {
+        largerTextScale = scale;
+        largerTextEnabled = scale > 1.0f + 0.001f;
     }
 
 
@@ -3762,6 +3994,41 @@ public class JavaSEPort extends CodenameOneImplementation {
                 menuDisplayed = false;
             }
         });
+    }
+
+    /**
+     * Discovers cn1lib-contributed simulator menu items via
+     * {@link SimulatorHookLoader} and groups them by menu name. The UX shell
+     * (this method, today) translates the neutral {@link SimulatorHook} list
+     * into Swing widgets; the contract that cn1libs depend on is the
+     * properties file + static method, not these JMenu/JMenuItem types.
+     */
+    private List<JMenu> buildExtensionMenus() {
+        List<SimulatorHook> hooks = SimulatorHookLoader.load();
+        LinkedHashMap<String, JMenu> byName = new LinkedHashMap<String, JMenu>();
+        for (final SimulatorHook hook : hooks) {
+            // API-only hooks (no label) are still registered with the
+            // executor so CN.executeHook can drive them, but they don't
+            // appear in the menu.
+            if (!hook.hasMenuLabel()) {
+                continue;
+            }
+            JMenu menu = byName.get(hook.getMenuName());
+            if (menu == null) {
+                menu = new JMenu(hook.getMenuName());
+                registerMenuWithBlit(menu);
+                byName.put(hook.getMenuName(), menu);
+            }
+            JMenuItem item = new JMenuItem(hook.getLabel());
+            item.addActionListener(new ActionListener() {
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    hook.getInvoke().run();
+                }
+            });
+            menu.add(item);
+        }
+        return new ArrayList<JMenu>(byName.values());
     }
 
     private static Component findStatusBarComponent(Form f) {
@@ -4536,6 +4803,89 @@ public class JavaSEPort extends CodenameOneImplementation {
         });
         simulateMenu.add(pushSim);
 
+        JMenu biometricMenu = new JMenu("Biometric Simulation");
+
+        final JCheckBoxMenuItem bioAvailable = new JCheckBoxMenuItem("Hardware Available",
+                pref.getBoolean("BiometricSim.available", false));
+        JavaSEBiometrics.simAvailable = bioAvailable.isSelected();
+        bioAvailable.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSEBiometrics.simAvailable = bioAvailable.isSelected();
+                pref.putBoolean("BiometricSim.available", bioAvailable.isSelected());
+            }
+        });
+        biometricMenu.add(bioAvailable);
+
+        biometricMenu.addSeparator();
+
+        final JCheckBoxMenuItem bioFace = new JCheckBoxMenuItem("Face ID Enrolled",
+                pref.getBoolean("BiometricSim.face", false));
+        JavaSEBiometrics.simFaceEnrolled = bioFace.isSelected();
+        bioFace.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSEBiometrics.simFaceEnrolled = bioFace.isSelected();
+                pref.putBoolean("BiometricSim.face", bioFace.isSelected());
+            }
+        });
+        biometricMenu.add(bioFace);
+
+        final JCheckBoxMenuItem bioTouch = new JCheckBoxMenuItem("Touch ID Enrolled",
+                pref.getBoolean("BiometricSim.touch", false));
+        JavaSEBiometrics.simTouchEnrolled = bioTouch.isSelected();
+        bioTouch.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSEBiometrics.simTouchEnrolled = bioTouch.isSelected();
+                pref.putBoolean("BiometricSim.touch", bioTouch.isSelected());
+            }
+        });
+        biometricMenu.add(bioTouch);
+
+        final JCheckBoxMenuItem bioIris = new JCheckBoxMenuItem("Iris Enrolled",
+                pref.getBoolean("BiometricSim.iris", false));
+        JavaSEBiometrics.simIrisEnrolled = bioIris.isSelected();
+        bioIris.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSEBiometrics.simIrisEnrolled = bioIris.isSelected();
+                pref.putBoolean("BiometricSim.iris", bioIris.isSelected());
+            }
+        });
+        biometricMenu.add(bioIris);
+
+        biometricMenu.addSeparator();
+
+        JMenu outcomeMenu = new JMenu("Next authenticate() Outcome");
+        ButtonGroup outcomeGroup = new ButtonGroup();
+        String savedOutcome = pref.get("BiometricSim.outcome", JavaSEBiometrics.SimOutcome.SUCCEED.name());
+        try {
+            JavaSEBiometrics.nextOutcome = JavaSEBiometrics.SimOutcome.valueOf(savedOutcome);
+        } catch (IllegalArgumentException ex) {
+            JavaSEBiometrics.nextOutcome = JavaSEBiometrics.SimOutcome.SUCCEED;
+        }
+        JavaSEBiometrics.SimOutcome[] outcomes = JavaSEBiometrics.SimOutcome.values();
+        for (int i = 0; i < outcomes.length; i++) {
+            final JavaSEBiometrics.SimOutcome outcome = outcomes[i];
+            final JRadioButtonMenuItem item = new JRadioButtonMenuItem(outcome.name(),
+                    outcome == JavaSEBiometrics.nextOutcome);
+            outcomeGroup.add(item);
+            item.addActionListener(new ActionListener() {
+                @Override
+                public void actionPerformed(ActionEvent ae) {
+                    JavaSEBiometrics.nextOutcome = outcome;
+                    pref.put("BiometricSim.outcome", outcome.name());
+                }
+            });
+            outcomeMenu.add(item);
+        }
+        biometricMenu.add(outcomeMenu);
+
+        simulateMenu.add(biometricMenu);
+
+        installNfcSimulationMenu(simulateMenu, pref);
+
         // Mirrors cn1FireStatusBarTap in CodenameOne_GLViewController.m, which
         // synthesizes a tap inside CN1's StatusBar component (the bar at the
         // top of Toolbar created by Toolbar.initTitleBarStatus). The native
@@ -5005,6 +5355,9 @@ public class JavaSEPort extends CodenameOneImplementation {
             bar.add(toolsMenu);
             bar.add(skinMenu);
             bar.add(createNativeThemeMenu(frm));
+            for (JMenu extensionMenu : buildExtensionMenus()) {
+                bar.add(extensionMenu);
+            }
             bar.add(helpMenu);
         }
 
@@ -5158,15 +5511,14 @@ public class JavaSEPort extends CodenameOneImplementation {
     }
 
     private JMenu createSkinsMenu(final JFrame frm, final JMenu menu) throws MalformedURLException {
-        JMenu m;
+        final JMenu skinMenu;
         if (menu == null) {
-            m = new JMenu("Skins");
-            m.setDoubleBuffered(true);
+            skinMenu = new JMenu("Skins");
+            skinMenu.setDoubleBuffered(true);
         } else {
-            m = menu;
-            m.removeAll();
+            skinMenu = menu;
+            skinMenu.removeAll();
         }
-        final JMenu skinMenu = m;
 
         // Top-level: file picker for a user-supplied .skin
         JMenuItem addSkin = new JMenuItem("Add Skin");
@@ -5191,15 +5543,25 @@ public class JavaSEPort extends CodenameOneImplementation {
                         perfMonitor.dispose();
                         perfMonitor = null;
                     }
+                    String path = picker.getDirectory() + File.separator + file;
+                    File picked = new File(path);
+                    if (picked.exists()) {
+                        // Persist immediately so the picked skin shows up
+                        // at the top level the next time the user opens
+                        // the menu, even if they dismiss the reload
+                        // before loadSkinFile finishes its own
+                        // addSkinName.
+                        addSkinName(picked.toURI().toString());
+                    }
                     String mainClass = System.getProperty("MainClass");
                     if (mainClass != null) {
                         Preferences p = Preferences.userNodeForPackage(JavaSEPort.class);
-                        p.put("skin", picker.getDirectory() + File.separator + file);
+                        p.put("skin", path);
                         deinitializeSync();
                         frm.dispose();
                         System.setProperty("reload.simulator", "true");
                     } else {
-                        loadSkinFile(picker.getDirectory() + File.separator + file, frm);
+                        loadSkinFile(path, frm);
                         refreshSkin(frm);
                     }
                 }
@@ -5208,8 +5570,9 @@ public class JavaSEPort extends CodenameOneImplementation {
         skinMenu.add(addSkin);
 
         // Top-level: hand off to the hosted Skin Designer for building
-        // a new skin from scratch. Replaces the bundled gallery; the
-        // pre-built skins all live behind the "Legacy Skins" submenu.
+        // a new skin from scratch. The legacy OTA gallery moved into
+        // the submenu below; this is the supported way to author new
+        // skins.
         JMenuItem designerItem = new JMenuItem("Skin Designer");
         designerItem.addActionListener(new ActionListener() {
             public void actionPerformed(ActionEvent ae) {
@@ -5225,79 +5588,147 @@ public class JavaSEPort extends CodenameOneImplementation {
 
         skinMenu.addSeparator();
 
+        // One ButtonGroup spans the top-level radios and the Legacy
+        // Skins submenu so the visually-selected skin is unique across
+        // both. Without this, opening the submenu shows two separate
+        // selected radios.
+        final ButtonGroup skinGroup = new ButtonGroup();
+        final Preferences pref = Preferences.userNodeForPackage(JavaSEPort.class);
+        final String currentSkin = pref.get("skin", System.getProperty("dskin"));
+        final boolean desktopSkinPref = pref.getBoolean("desktopSkin", false);
+        final boolean uwpDesktopSkinPref = pref.getBoolean("uwpDesktopSkin", false);
+
+        // Partition the configured skins. The framework default and
+        // anything the user added via "Add Skin" stay at the top level;
+        // OTA downloads from the legacy codenameone.com gallery move
+        // into the submenu so the top level isn't cluttered with old
+        // device skins most users never installed.
+        String skinNames = pref.get("skins", DEFAULT_SKINS);
+        if (skinNames == null || skinNames.length() < DEFAULT_SKINS.length()) {
+            skinNames = DEFAULT_SKINS;
+        }
+        final List<String> topLevelSkins = new ArrayList<String>();
+        final List<String> otaSkins = new ArrayList<String>();
+        StringTokenizer tkn = new StringTokenizer(skinNames, ";");
+        while (tkn.hasMoreTokens()) {
+            String entry = tkn.nextToken();
+            String kind = classifySkin(entry);
+            if ("ota".equals(kind)) {
+                otaSkins.add(entry);
+            } else if (kind != null) {
+                topLevelSkins.add(entry);
+            }
+        }
+
+        for (String entry : topLevelSkins) {
+            JRadioButtonMenuItem item = buildSkinRadioItem(frm, entry, currentSkin, desktopSkinPref);
+            skinGroup.add(item);
+            skinMenu.add(item);
+        }
+
+        skinMenu.addSeparator();
+
+        // Desktop pseudo-skins flip the "desktopSkin" preference; they
+        // don't pick a .skin file. Modeling them as radios in the same
+        // group makes the active chrome mode visible at a glance.
+        JRadioButtonMenuItem dSkin = new JRadioButtonMenuItem("Desktop.skin",
+                desktopSkinPref && !uwpDesktopSkinPref);
+        dSkin.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent ae) {
+                switchDesktopSkin(frm, false);
+            }
+        });
+        JRadioButtonMenuItem uwpSkin = new JRadioButtonMenuItem("UWP Desktop.skin",
+                desktopSkinPref && uwpDesktopSkinPref);
+        uwpSkin.setToolTipText("Windows 10 Desktop Skin");
+        uwpSkin.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent ae) {
+                switchDesktopSkin(frm, true);
+            }
+        });
+        skinGroup.add(dSkin);
+        skinGroup.add(uwpSkin);
+        skinMenu.add(dSkin);
+        skinMenu.add(uwpSkin);
+
+        skinMenu.addSeparator();
+
+        // Legacy Skins submenu: OTA-downloaded skins from the
+        // codenameone.com gallery, plus the gallery downloader itself
+        // ("More...") and the "Reset Skins" action that clears
+        // ~/.codenameone/ back to a clean state.
         final JMenu legacyMenu = new JMenu("Legacy Skins");
         legacyMenu.setDoubleBuffered(true);
         skinMenu.add(legacyMenu);
-        populateLegacySkinsMenu(frm, legacyMenu);
+        populateLegacySkinsMenu(frm, skinMenu, legacyMenu, skinGroup, otaSkins, currentSkin, desktopSkinPref);
         return skinMenu;
     }
 
-    private void populateLegacySkinsMenu(final JFrame frm, final JMenu legacyMenu) throws MalformedURLException {
-        legacyMenu.removeAll();
-        final JMenu skinMenu = legacyMenu;
-        Preferences pref = Preferences.userNodeForPackage(JavaSEPort.class);
-        String skinNames = pref.get("skins", DEFAULT_SKINS);
-        if (skinNames != null) {
-            if (skinNames.length() < DEFAULT_SKINS.length()) {
-                skinNames = DEFAULT_SKINS;
-            }
-            ButtonGroup skinGroup = new ButtonGroup();
-            StringTokenizer tkn = new StringTokenizer(skinNames, ";");
-            while (tkn.hasMoreTokens()) {
-                final String current = tkn.nextToken();
-                String name = current;
-                if (current.contains(":")) {
-                    try {
-                        URL u = new URL(current);
-                        File f = new File(u.getFile());
-                        if (!f.exists()) {
-                            continue;
-                        }
-                        name = f.getName();
-
-                    } catch (Exception e) {
-                        continue;
-                    }
-                } else {
-                    // remove the old builtin skins from the menu
-                    if(current.startsWith("/") && !current.equals(DEFAULT_SKIN)) {
-                        continue;
-                    }
-                }
-                String d = System.getProperty("dskin");
-                JRadioButtonMenuItem i = new JRadioButtonMenuItem(name, name.equals(pref.get("skin", d)));
-                i.addActionListener(new ActionListener() {
-
-                    public void actionPerformed(ActionEvent ae) {
-                        if (netMonitor != null) {
-                            netMonitor.dispose();
-                            netMonitor = null;
-                        }
-                        if (perfMonitor != null) {
-                            perfMonitor.dispose();
-                            perfMonitor = null;
-                        }
-                        Preferences pref = Preferences.userNodeForPackage(JavaSEPort.class);
-                        pref.putBoolean("desktopSkin", false);
-                        String mainClass = System.getProperty("MainClass");
-                        if (mainClass != null) {
-                            pref.put("skin", current);
-                            frm.dispose();
-                            System.setProperty("reload.simulator", "true");
-                        } else {
-                            loadSkinFile(current, frm);
-                            refreshSkin(frm);
-                        }
-                    }
-                });
-                skinGroup.add(i);
-                skinMenu.add(i);
-            }
+    /**
+     * Categorise a stored skin path. The "skins" preference accumulates
+     * a mix of: the framework default ("/iPhoneX.skin"), file:// URIs
+     * pointing into ~/.codenameone/ (OTA downloads), and arbitrary
+     * filesystem paths the user picked via "Add Skin". Stale entries
+     * from removed bundled skins also leak in. The kind returned drives
+     * which menu the entry belongs to.
+     *
+     * @return "default" for DEFAULT_SKIN, "ota" for downloads in
+     * ~/.codenameone/, "user" for any other resolvable filesystem skin,
+     * or {@code null} when the entry should be dropped.
+     */
+    private String classifySkin(String pathOrURI) {
+        if (pathOrURI == null || pathOrURI.isEmpty()) {
+            return null;
         }
-        JMenuItem dSkin = new JMenuItem("Desktop.skin");
-        
-        dSkin.addActionListener(new ActionListener() {
+        File asFile = null;
+        if (pathOrURI.startsWith("file:") || pathOrURI.contains("://")) {
+            try {
+                asFile = new File(new URL(pathOrURI).getFile());
+            } catch (Exception e) {
+                return null;
+            }
+        } else {
+            asFile = new File(pathOrURI);
+        }
+        if (asFile != null && asFile.exists()) {
+            File otaRoot = new File(System.getProperty("user.home"), ".codenameone");
+            try {
+                String otaCanonical = otaRoot.getCanonicalPath() + File.separator;
+                if (asFile.getCanonicalPath().startsWith(otaCanonical)) {
+                    return "ota";
+                }
+            } catch (IOException ignored) {
+            }
+            return "user";
+        }
+        // Doesn't resolve on the filesystem: treat as a classpath
+        // resource. Only the current default is kept; old bundled
+        // skins were removed and would error out at load time.
+        if (DEFAULT_SKIN.equals(pathOrURI)) {
+            return "default";
+        }
+        return null;
+    }
 
+    private JRadioButtonMenuItem buildSkinRadioItem(final JFrame frm, final String skinPath,
+            final String currentSkin, final boolean desktopSkinActive) {
+        String name;
+        if (skinPath.startsWith("file:") || skinPath.contains("://")) {
+            try {
+                name = new File(new URL(skinPath).getFile()).getName();
+            } catch (Exception e) {
+                name = skinPath;
+            }
+        } else if (skinPath.startsWith("/") && !new File(skinPath).exists()) {
+            // classpath resource - drop the leading slash for display
+            name = skinPath.substring(1);
+        } else {
+            File f = new File(skinPath);
+            name = f.exists() ? f.getName() : skinPath;
+        }
+        JRadioButtonMenuItem item = new JRadioButtonMenuItem(name,
+                !desktopSkinActive && skinPath.equals(currentSkin));
+        item.addActionListener(new ActionListener() {
             public void actionPerformed(ActionEvent ae) {
                 if (netMonitor != null) {
                     netMonitor.dispose();
@@ -5308,47 +5739,56 @@ public class JavaSEPort extends CodenameOneImplementation {
                     perfMonitor = null;
                 }
                 Preferences pref = Preferences.userNodeForPackage(JavaSEPort.class);
-                pref.putBoolean("desktopSkin", true);
-                pref.putBoolean("uwpDesktopSkin", false);
+                pref.putBoolean("desktopSkin", false);
                 String mainClass = System.getProperty("MainClass");
                 if (mainClass != null) {
-                    deinitializeSync();
+                    pref.put("skin", skinPath);
                     frm.dispose();
                     System.setProperty("reload.simulator", "true");
-                } 
+                } else {
+                    loadSkinFile(skinPath, frm);
+                    refreshSkin(frm);
+                }
             }
         });
-        JMenuItem uwpSkin = new JMenuItem("UWP Desktop.skin");
-        uwpSkin.setToolTipText("Windows 10 Desktop Skin");
-        uwpSkin.addActionListener(new ActionListener() {
+        return item;
+    }
 
-            public void actionPerformed(ActionEvent ae) {
-                if (netMonitor != null) {
-                    netMonitor.dispose();
-                    netMonitor = null;
-                }
-                if (perfMonitor != null) {
-                    perfMonitor.dispose();
-                    perfMonitor = null;
-                }
-                Preferences pref = Preferences.userNodeForPackage(JavaSEPort.class);
-                pref.putBoolean("desktopSkin", true);
-                pref.putBoolean("uwpDesktopSkin", true);
-                String mainClass = System.getProperty("MainClass");
-                if (mainClass != null) {
-                    deinitializeSync();
-                    frm.dispose();
-                    System.setProperty("reload.simulator", "true");
-                } 
-            }
-        });
-        skinMenu.addSeparator();
-        skinMenu.add(dSkin);
-        skinMenu.add(uwpSkin);
-        
-        skinMenu.addSeparator();
+    private void switchDesktopSkin(JFrame frm, boolean uwp) {
+        if (netMonitor != null) {
+            netMonitor.dispose();
+            netMonitor = null;
+        }
+        if (perfMonitor != null) {
+            perfMonitor.dispose();
+            perfMonitor = null;
+        }
+        Preferences pref = Preferences.userNodeForPackage(JavaSEPort.class);
+        pref.putBoolean("desktopSkin", true);
+        pref.putBoolean("uwpDesktopSkin", uwp);
+        if (System.getProperty("MainClass") != null) {
+            deinitializeSync();
+            frm.dispose();
+            System.setProperty("reload.simulator", "true");
+        }
+    }
+
+    private void populateLegacySkinsMenu(final JFrame frm, final JMenu topLevelMenu, final JMenu legacyMenu,
+            final ButtonGroup skinGroup, final List<String> otaSkins, final String currentSkin,
+            final boolean desktopSkinActive) throws MalformedURLException {
+        legacyMenu.removeAll();
+
+        for (String entry : otaSkins) {
+            JRadioButtonMenuItem item = buildSkinRadioItem(frm, entry, currentSkin, desktopSkinActive);
+            skinGroup.add(item);
+            legacyMenu.add(item);
+        }
+        if (!otaSkins.isEmpty()) {
+            legacyMenu.addSeparator();
+        }
+
         JMenuItem more = new JMenuItem("More...");
-        skinMenu.add(more);
+        legacyMenu.add(more);
         more.addActionListener(new ActionListener() {
 
             @Override
@@ -5550,7 +5990,12 @@ public class JavaSEPort extends CodenameOneImplementation {
                                             downloadMessage.setVisible(false);
                                             d.setVisible(false);
                                             try {
-                                                populateLegacySkinsMenu(frm, skinMenu);
+                                                // Rebuild the whole Skins menu - newly
+                                                // downloaded entries land in the Legacy
+                                                // submenu but the shared ButtonGroup
+                                                // spans both, so a partial rebuild
+                                                // would leak the previous group.
+                                                createSkinsMenu(frm, topLevelMenu);
                                             } catch (MalformedURLException ex) {
                                                 Logger.getLogger(JavaSEPort.class.getName()).log(Level.SEVERE, null, ex);
                                             }
@@ -5577,15 +6022,15 @@ public class JavaSEPort extends CodenameOneImplementation {
             }
         });
 
-        skinMenu.addSeparator();
+        legacyMenu.addSeparator();
         JMenuItem reset = new JMenuItem("Reset Skins");
-        skinMenu.add(reset);
+        legacyMenu.add(reset);
         reset.addActionListener(new ActionListener() {
 
             public void actionPerformed(ActionEvent ae) {
                     if(JOptionPane.showConfirmDialog(frm,
-                            "Are you sure you want to reset skins to default?", 
-                            "Clean Storage", 
+                            "Are you sure you want to reset skins to default?",
+                            "Clean Storage",
                             JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION){
                         Preferences pref = Preferences.userNodeForPackage(JavaSEPort.class);
                         pref.put("skins", DEFAULT_SKINS);
@@ -5802,6 +6247,250 @@ public class JavaSEPort extends CodenameOneImplementation {
             largerTextMenu.add(item);
         }
         parent.add(largerTextMenu);
+    }
+
+    /**
+     * Wires up the Simulate -> NFC submenu so apps that touch
+     * {@link com.codename1.nfc.Nfc} can be exercised in the simulator
+     * without an NFC device. Items:
+     * <ul>
+     *   <li>"Tap virtual tag" -- fires the configured outcome (discovery,
+     *       cancel, tag lost, timeout, read-only) on any pending
+     *       readTag() / listeners.</li>
+     *   <li>"Edit virtual tag URI..." / "Edit virtual tag text..." -- set
+     *       the NDEF message returned by the tap.</li>
+     *   <li>"Hardware Available" / "NFC Enabled" / "HCE Available" toggles
+     *       so canRead() / canHostEmulate() return the simulator-configured
+     *       value.</li>
+     *   <li>"Send APDU to HCE service..." -- pops a hex-entry dialog,
+     *       dispatches the bytes to the application's registered
+     *       HostCardEmulationService, and shows the response.</li>
+     *   <li>"Make tag read-only" -- mark the virtual tag locked so the
+     *       next write fails with READ_ONLY.</li>
+     * </ul>
+     * Preferences keys all start with "NfcSim." so they survive simulator
+     * restarts.
+     */
+    private void installNfcSimulationMenu(JMenu simulateMenu, final Preferences pref) {
+        JMenu nfcMenu = new JMenu("NFC");
+
+        final JCheckBoxMenuItem hwAvailable = new JCheckBoxMenuItem(
+                "Hardware Available", pref.getBoolean("NfcSim.supported", true));
+        JavaSENfc.simSupported = hwAvailable.isSelected();
+        hwAvailable.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSENfc.simSupported = hwAvailable.isSelected();
+                pref.putBoolean("NfcSim.supported", hwAvailable.isSelected());
+            }
+        });
+        nfcMenu.add(hwAvailable);
+
+        final JCheckBoxMenuItem enabled = new JCheckBoxMenuItem(
+                "NFC Enabled", pref.getBoolean("NfcSim.enabled", true));
+        JavaSENfc.simEnabled = enabled.isSelected();
+        enabled.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSENfc.simEnabled = enabled.isSelected();
+                pref.putBoolean("NfcSim.enabled", enabled.isSelected());
+            }
+        });
+        nfcMenu.add(enabled);
+
+        final JCheckBoxMenuItem hce = new JCheckBoxMenuItem(
+                "HCE Available", pref.getBoolean("NfcSim.hce", true));
+        JavaSENfc.simHceSupported = hce.isSelected();
+        hce.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSENfc.simHceSupported = hce.isSelected();
+                pref.putBoolean("NfcSim.hce", hce.isSelected());
+            }
+        });
+        nfcMenu.add(hce);
+
+        nfcMenu.addSeparator();
+
+        JMenu outcomeMenu = new JMenu("Next read outcome");
+        ButtonGroup outcomeGroup = new ButtonGroup();
+        String savedOutcome = pref.get("NfcSim.outcome",
+                JavaSENfc.SimReadOutcome.DISCOVER_TAG.name());
+        try {
+            JavaSENfc.nextReadOutcome =
+                    JavaSENfc.SimReadOutcome.valueOf(savedOutcome);
+        } catch (IllegalArgumentException ex) {
+            JavaSENfc.nextReadOutcome = JavaSENfc.SimReadOutcome.DISCOVER_TAG;
+        }
+        for (final JavaSENfc.SimReadOutcome o : JavaSENfc.SimReadOutcome.values()) {
+            final JRadioButtonMenuItem item = new JRadioButtonMenuItem(o.name(),
+                    o == JavaSENfc.nextReadOutcome);
+            outcomeGroup.add(item);
+            item.addActionListener(new ActionListener() {
+                @Override
+                public void actionPerformed(ActionEvent ae) {
+                    JavaSENfc.nextReadOutcome = o;
+                    pref.put("NfcSim.outcome", o.name());
+                }
+            });
+            outcomeMenu.add(item);
+        }
+        nfcMenu.add(outcomeMenu);
+
+        JMenuItem tap = new JMenuItem("Tap virtual tag");
+        tap.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                com.codename1.nfc.Nfc n = getNfc();
+                if (n instanceof JavaSENfc) {
+                    ((JavaSENfc) n).simulateTap();
+                }
+            }
+        });
+        nfcMenu.add(tap);
+
+        nfcMenu.addSeparator();
+
+        JMenuItem setUri = new JMenuItem("Set virtual tag URI...");
+        setUri.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                String def = pref.get("NfcSim.uri",
+                        "https://codenameone.com");
+                String uri = JOptionPane.showInputDialog(
+                        canvas,
+                        "Virtual tag URI:",
+                        def);
+                if (uri != null) {
+                    JavaSENfc.simNdef = new com.codename1.nfc.NdefMessage(
+                            com.codename1.nfc.NdefRecord.createUri(uri));
+                    pref.put("NfcSim.uri", uri);
+                }
+            }
+        });
+        nfcMenu.add(setUri);
+
+        JMenuItem setText = new JMenuItem("Set virtual tag text...");
+        setText.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                String def = pref.get("NfcSim.text", "Hello Codename One");
+                String t = JOptionPane.showInputDialog(
+                        canvas,
+                        "Virtual tag text:",
+                        def);
+                if (t != null) {
+                    JavaSENfc.simNdef = new com.codename1.nfc.NdefMessage(
+                            com.codename1.nfc.NdefRecord.createText("en", t));
+                    pref.put("NfcSim.text", t);
+                }
+            }
+        });
+        nfcMenu.add(setText);
+
+        final JCheckBoxMenuItem locked = new JCheckBoxMenuItem(
+                "Tag is read-only", !pref.getBoolean("NfcSim.writable", true));
+        JavaSENfc.tagWritable = !locked.isSelected();
+        locked.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                JavaSENfc.tagWritable = !locked.isSelected();
+                pref.putBoolean("NfcSim.writable", !locked.isSelected());
+            }
+        });
+        nfcMenu.add(locked);
+
+        nfcMenu.addSeparator();
+
+        JMenuItem sendApdu = new JMenuItem("Send APDU to HCE service...");
+        sendApdu.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                String def = pref.get("NfcSim.apdu",
+                        "00A4040007F0010203040506");
+                String hex = JOptionPane.showInputDialog(
+                        canvas,
+                        "APDU bytes (hex):",
+                        def);
+                if (hex == null) {
+                    return;
+                }
+                byte[] command;
+                try {
+                    command = parseHex(hex);
+                } catch (RuntimeException re) {
+                    JOptionPane.showMessageDialog(canvas,
+                            "Invalid hex: " + re.getMessage());
+                    return;
+                }
+                pref.put("NfcSim.apdu", hex);
+                com.codename1.nfc.Nfc n = getNfc();
+                if (!(n instanceof JavaSENfc)) {
+                    JOptionPane.showMessageDialog(canvas,
+                            "NFC simulator unavailable.");
+                    return;
+                }
+                byte[] resp = ((JavaSENfc) n).simulateApdu(command);
+                JOptionPane.showMessageDialog(canvas,
+                        "Response: " + toHex(resp));
+            }
+        });
+        nfcMenu.add(sendApdu);
+
+        JMenuItem deactivate = new JMenuItem("Deactivate HCE field");
+        deactivate.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                com.codename1.nfc.Nfc n = getNfc();
+                if (n instanceof JavaSENfc) {
+                    ((JavaSENfc) n).simulateDeactivate(
+                            com.codename1.nfc.HostCardEmulationService.DEACTIVATION_LINK_LOSS);
+                }
+            }
+        });
+        nfcMenu.add(deactivate);
+
+        simulateMenu.add(nfcMenu);
+    }
+
+    private static byte[] parseHex(String hex) {
+        if (hex == null) {
+            return new byte[0];
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < hex.length(); i++) {
+            char c = hex.charAt(i);
+            if (c != ' ' && c != ':' && c != '-') {
+                sb.append(c);
+            }
+        }
+        String clean = sb.toString();
+        if ((clean.length() & 1) != 0) {
+            throw new IllegalArgumentException("hex must have an even number of chars");
+        }
+        byte[] out = new byte[clean.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(clean.charAt(i * 2), 16);
+            int lo = Character.digit(clean.charAt(i * 2 + 1), 16);
+            if (hi < 0 || lo < 0) {
+                throw new IllegalArgumentException("non-hex digit at " + i);
+            }
+            out[i] = (byte) ((hi << 4) | lo);
+        }
+        return out;
+    }
+
+    private static String toHex(byte[] in) {
+        if (in == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(in.length * 2);
+        for (int i = 0; i < in.length; i++) {
+            int b = in[i] & 0xFF;
+            sb.append(Character.forDigit((b >>> 4) & 0xF, 16));
+            sb.append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString().toUpperCase();
     }
 
     @Override
@@ -6068,11 +6757,41 @@ public class JavaSEPort extends CodenameOneImplementation {
         }
     }
 
+    /** Reflectively run the build-time SVG transcoder's registry if the
+     *  current classpath contains one. Lets desktop / simulator runs pick
+     *  up transcoded SVGs without the per-platform Stub needing an explicit
+     *  call -- the Stub call is omitted on JavaSE because the user's
+     *  ${mainName}Stub doesn't know at template-expansion time whether the
+     *  project ships any SVGs. Apps without an SVG registry are unaffected. */
+    private static boolean svgRegistryInstalled;
+    private static void installGeneratedSvgRegistry() {
+        if (svgRegistryInstalled) {
+            return;
+        }
+        try {
+            Class<?> r = Class.forName("com.codename1.generated.svg.SVGRegistry");
+            r.getMethod("installGlobal").invoke(null);
+        } catch (ClassNotFoundException noSvgs) {
+            // Project ships no SVGs -- skip silently.
+        } catch (Throwable t) {
+            // Don't take init() down if the registry blows up; surface it
+            // but let the app keep running so missing SVGs don't blank the
+            // whole UI.
+            t.printStackTrace();
+        }
+        svgRegistryInstalled = true;
+    }
+
     /**
      * @inheritDoc
      */
     public void init(Object m) {
         inInit = true;
+        installGeneratedSvgRegistry();
+
+        // Fire-and-forget probe so LlmClient.simulatorRedirect=auto
+        // can detect a local Ollama install without blocking startup.
+        probeOllamaAsync();
 
 /*        File updater = new File(System.getProperty("user.home") + File.separator + ".codenameone" + File.separator + "UpdateCodenameOne.jar");
         if(!updater.exists()) {
@@ -6530,10 +7249,51 @@ public class JavaSEPort extends CodenameOneImplementation {
         if (m instanceof Runnable) {
             Display.getInstance().callSerially((Runnable) m);
         }
-        
+
         inInit = false;
     }
-    
+
+    @Override
+    public void postInit() {
+        super.postInit();
+        // Install the build-time-generated @Route dispatcher, if the project
+        // emitted one. JavaSE is the legitimate place for dynamic loading --
+        // it runs unobfuscated and spins its own ClassPathLoader, so
+        // Class.forName resolves reliably across both the simulator
+        // (Executor-driven entry) and desktop production runs (entry through
+        // the application stub). ParparVM iOS and Android use the per-build
+        // application-stub direct symbol reference instead. Routes' no-arg
+        // constructor self-registers via Navigation#setDispatcher.
+        try {
+            Class.forName("com.codename1.router.generated.Routes").newInstance();
+        } catch (ClassNotFoundException ignored) {
+            // No @Route in this project.
+        } catch (Throwable t) {
+            com.codename1.io.Log.e(t);
+        }
+        // Install build-time annotation-framework bootstraps. Each
+        // bootstrap class lives at a fixed FQN under cn1app.* and is
+        // generated only when the project actually uses the
+        // corresponding annotations -- ClassNotFoundException is the
+        // "feature not used" signal. JavaSE is the legitimate place
+        // for Class.forName here (matches the @Route pattern above).
+        for (String bootstrap : new String[] {
+                "cn1app.MapperBootstrap",
+                "cn1app.BinderBootstrap",
+                "cn1app.DaoBootstrap",
+                "cn1app.RestClientBootstrap",
+                "cn1app.ProtoBootstrap",
+                "cn1app.GrpcClientBootstrap"}) {
+            try {
+                Class.forName(bootstrap).newInstance();
+            } catch (ClassNotFoundException ignored) {
+                // Feature not used by this project.
+            } catch (Throwable t) {
+                com.codename1.io.Log.e(t);
+            }
+        }
+    }
+
     protected void sizeChanged(int w, int h) {
         try{
             super.sizeChanged(w, h);
@@ -8055,32 +8815,256 @@ public class JavaSEPort extends CodenameOneImplementation {
     public void popClip(Object graphics) {
         checkEDT();
         Graphics2D g2d = getGraphics(graphics);
-        
+
         if ( graphics instanceof NativeScreenGraphics ){
             NativeScreenGraphics g = (NativeScreenGraphics)graphics;
+            if (g.clipStack.isEmpty()) {
+                throw new IllegalStateException(
+                        "popClip() called with no matching pushClip(). " +
+                        "The clip stack is empty -- popping it would corrupt the graphics state. " +
+                        "This is detected only by the simulator; on devices the same mistake can " +
+                        "manifest as drift or crashes after many frames (see issue #5058).");
+            }
             Shape oldClip = g.clipStack.pop();
-            
             g2d.setClip(oldClip);
         } else {
             synchronized(clipStack) {
-                if (clipStack.containsKey(graphics)) {
-                    Shape oldClip = clipStack.get(graphics).pop();
-                    if (oldClip != null) {
-                        g2d.setClip(oldClip);
-                    }
+                LinkedList<Shape> stack = clipStack.get(graphics);
+                if (stack == null || stack.isEmpty()) {
+                    throw new IllegalStateException(
+                            "popClip() called with no matching pushClip(). " +
+                            "The clip stack is empty -- popping it would corrupt the graphics state. " +
+                            "This is detected only by the simulator; on devices the same mistake can " +
+                            "manifest as drift or crashes after many frames (see issue #5058).");
+                }
+                Shape oldClip = stack.pop();
+                if (oldClip != null) {
+                    g2d.setClip(oldClip);
                 }
             }
         }
-        
     }
 
     private final Map<Object,LinkedList<Shape>> clipStack = new HashMap<Object,LinkedList<Shape>>();
-    
+
     @Override
     public void disposeGraphics(Object graphics) {
         synchronized(clipStack) {
             clipStack.remove(graphics);
         }
+        synchronized(paintScopes) {
+            paintScopes.remove(graphics);
+        }
+    }
+
+    /// Snapshot of Graphics2D state taken when a user paint scope begins.
+    /// Used by the simulator to detect components/painters that leak state
+    /// (clip push without pop, dangling translate, alpha change, etc.).
+    private static final class PaintScopeSnapshot {
+        final Object owner;
+        final int clipStackDepth;
+        final Shape clip;
+        final AffineTransform transform;
+        final java.awt.Color color;
+        final java.awt.Font font;
+        final java.awt.Composite composite;
+        PaintScopeSnapshot(Object owner, int clipStackDepth, Shape clip,
+                AffineTransform transform, java.awt.Color color,
+                java.awt.Font font, java.awt.Composite composite) {
+            this.owner = owner;
+            this.clipStackDepth = clipStackDepth;
+            this.clip = clip;
+            this.transform = transform;
+            this.color = color;
+            this.font = font;
+            this.composite = composite;
+        }
+    }
+
+    private final Map<Object,LinkedList<PaintScopeSnapshot>> paintScopes =
+            new HashMap<Object,LinkedList<PaintScopeSnapshot>>();
+
+    /// When true (default) the simulator validates that every user paint scope
+    /// (`Component.paint`, `Component.paintBackground`, `Painter.paint`,
+    /// `Form.paintGlass`, glass pane) leaves the Graphics in the same state it
+    /// found it. Set system property `cn1.disable.paint.scope.checks=true` to
+    /// turn the validation off (the begin/end hooks become no-ops).
+    private final boolean paintScopeChecksEnabled =
+            !Boolean.getBoolean("cn1.disable.paint.scope.checks");
+
+    /// Tracks `(owner-class, leak-kinds)` signatures already reported so a
+    /// leaky component logs once per session instead of every repaint
+    /// (issue #5102). The set is unbounded but its growth is bounded by the
+    /// number of distinct leak shapes in the running app, which is small.
+    private final java.util.Set<String> reportedPaintScopeLeaks =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    private int clipStackDepth(Object graphics) {
+        if (graphics instanceof NativeScreenGraphics) {
+            return ((NativeScreenGraphics) graphics).clipStack.size();
+        }
+        synchronized (clipStack) {
+            LinkedList<Shape> stack = clipStack.get(graphics);
+            return stack == null ? 0 : stack.size();
+        }
+    }
+
+    private void trimClipStack(Object graphics, int targetDepth) {
+        if (graphics instanceof NativeScreenGraphics) {
+            LinkedList<Shape> stack = ((NativeScreenGraphics) graphics).clipStack;
+            while (stack.size() > targetDepth) {
+                stack.pop();
+            }
+        } else {
+            synchronized (clipStack) {
+                LinkedList<Shape> stack = clipStack.get(graphics);
+                if (stack != null) {
+                    while (stack.size() > targetDepth) {
+                        stack.pop();
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
+    public void beginPaintScope(Object graphics, Object owner) {
+        if (!paintScopeChecksEnabled) {
+            return;
+        }
+        Graphics2D g2d = getGraphics(graphics);
+        PaintScopeSnapshot snap = new PaintScopeSnapshot(
+                owner,
+                clipStackDepth(graphics),
+                g2d.getClip(),
+                new AffineTransform(g2d.getTransform()),
+                g2d.getColor(),
+                g2d.getFont(),
+                g2d.getComposite());
+        synchronized (paintScopes) {
+            LinkedList<PaintScopeSnapshot> stack = paintScopes.get(graphics);
+            if (stack == null) {
+                stack = new LinkedList<PaintScopeSnapshot>();
+                paintScopes.put(graphics, stack);
+            }
+            stack.push(snap);
+        }
+    }
+
+    @Override
+    public void endPaintScope(Object graphics, Object owner) {
+        if (!paintScopeChecksEnabled) {
+            return;
+        }
+        PaintScopeSnapshot snap;
+        synchronized (paintScopes) {
+            LinkedList<PaintScopeSnapshot> stack = paintScopes.get(graphics);
+            if (stack == null || stack.isEmpty()) {
+                Log.p("paint-scope: endPaintScope without matching begin for "
+                        + describe(owner));
+                return;
+            }
+            snap = stack.pop();
+        }
+        if (snap.owner != owner) {
+            Log.p("paint-scope: mismatched begin/end (begin=" + describe(snap.owner)
+                    + ", end=" + describe(owner) + ")");
+        }
+        Graphics2D g2d = getGraphics(graphics);
+        StringBuilder diffs = null;
+        StringBuilder kinds = null;
+
+        int depthNow = clipStackDepth(graphics);
+        if (depthNow != snap.clipStackDepth) {
+            diffs = appendDiff(diffs, "clip stack depth " + snap.clipStackDepth
+                    + " -> " + depthNow + " (unmatched pushClip/popClip)");
+            kinds = appendDiff(kinds, "clipStackDepth");
+            trimClipStack(graphics, snap.clipStackDepth);
+        }
+        // Transform must be restored before the clip comparison: getClip()
+        // returns the clip in current user-space, so a different transform
+        // makes the same device-space clip look different.
+        if (!g2d.getTransform().equals(snap.transform)) {
+            diffs = appendDiff(diffs, "transform not restored " + snap.transform
+                    + " -> " + g2d.getTransform());
+            kinds = appendDiff(kinds, "transform");
+            g2d.setTransform(snap.transform);
+        }
+        if (!sameShape(g2d.getClip(), snap.clip)) {
+            diffs = appendDiff(diffs, "clip rect not restored");
+            kinds = appendDiff(kinds, "clipRect");
+            g2d.setClip(snap.clip);
+        }
+        if (!equalsNullSafe(g2d.getColor(), snap.color)) {
+            diffs = appendDiff(diffs, "color not restored " + snap.color
+                    + " -> " + g2d.getColor());
+            kinds = appendDiff(kinds, "color");
+            g2d.setColor(snap.color);
+        }
+        if (!equalsNullSafe(g2d.getFont(), snap.font)) {
+            diffs = appendDiff(diffs, "font not restored");
+            kinds = appendDiff(kinds, "font");
+            g2d.setFont(snap.font);
+        }
+        if (!equalsNullSafe(g2d.getComposite(), snap.composite)) {
+            diffs = appendDiff(diffs, "composite/alpha not restored");
+            kinds = appendDiff(kinds, "composite");
+            g2d.setComposite(snap.composite);
+        }
+
+        if (diffs != null) {
+            // Dedup per (owner-class, leak-kinds): a leaky component fires every
+            // paint, which used to flood the EDT log (issue #5102). One warning
+            // per signature is enough -- the diff text is identical anyway.
+            String signature = ownerClass(snap.owner) + "|" + kinds;
+            if (reportedPaintScopeLeaks.add(signature)) {
+                Log.p("paint-scope: " + describe(snap.owner)
+                        + " did not restore Graphics state: " + diffs
+                        + ". State has been auto-restored for the simulator; on device "
+                        + "this would persist into the next paint (see issue #5058)."
+                        + " Further occurrences of this leak shape are suppressed.");
+            }
+        }
+    }
+
+    private static StringBuilder appendDiff(StringBuilder b, String diff) {
+        if (b == null) {
+            return new StringBuilder(diff);
+        }
+        return b.append("; ").append(diff);
+    }
+
+    private static String ownerClass(Object owner) {
+        return owner == null ? "<null>" : owner.getClass().getName();
+    }
+
+    private static boolean equalsNullSafe(Object a, Object b) {
+        return a == null ? b == null : a.equals(b);
+    }
+
+    private static boolean sameShape(Shape a, Shape b) {
+        if (a == b) {
+            return true;
+        }
+        if (a == null || b == null) {
+            return false;
+        }
+        java.awt.Rectangle ra = a.getBounds();
+        java.awt.Rectangle rb = b.getBounds();
+        return ra.equals(rb);
+    }
+
+    private static String describe(Object owner) {
+        if (owner == null) {
+            return "<null>";
+        }
+        if (owner instanceof com.codename1.ui.Component) {
+            com.codename1.ui.Component c = (com.codename1.ui.Component) owner;
+            String name = c.getName();
+            return name != null ? c.getClass().getName() + "[" + name + "]"
+                    : c.getClass().getName();
+        }
+        return owner.getClass().getName();
     }
     
     
@@ -8280,6 +9264,102 @@ public class JavaSEPort extends CodenameOneImplementation {
         Paint p = new RadialGradientPaint(x+width/2, y+height/2, width/2, new float[]{0,1}, new Color[]{new Color(startColor), new Color(endColor)});
         nativeGraphics.setPaint(p);
         nativeGraphics.fillOval(x+1, y+1, width-2, height-2);
+    }
+
+    private static Color[] toAwtColors(int[] argb) {
+        Color[] out = new Color[argb.length];
+        for (int i = 0; i < argb.length; i++) {
+            out[i] = new Color(argb[i], true);
+        }
+        return out;
+    }
+
+    private static MultipleGradientPaint.CycleMethod cycle(byte c) {
+        switch (c) {
+            case com.codename1.ui.Gradient.CYCLE_REPEAT:
+                return MultipleGradientPaint.CycleMethod.REPEAT;
+            case com.codename1.ui.Gradient.CYCLE_REFLECT:
+                return MultipleGradientPaint.CycleMethod.REFLECT;
+            default:
+                return MultipleGradientPaint.CycleMethod.NO_CYCLE;
+        }
+    }
+
+    @Override
+    public void fillGradient(Object graphics, com.codename1.ui.Gradient gradient,
+            int x, int y, int width, int height) {
+        if (gradient == null || width <= 0 || height <= 0) {
+            return;
+        }
+        checkEDT();
+        if (gradient instanceof com.codename1.ui.LinearGradient) {
+            fillLinearGradientNative(graphics, (com.codename1.ui.LinearGradient) gradient,
+                    x, y, width, height);
+            return;
+        }
+        if (gradient instanceof com.codename1.ui.RadialGradient) {
+            fillRadialGradientNative(graphics, (com.codename1.ui.RadialGradient) gradient,
+                    x, y, width, height);
+            return;
+        }
+        // Java2D has no native conic / sweep gradient; fall back to the
+        // software rasterizer in the base impl. The conic kernel allocates a
+        // single ARGB buffer the size of the rectangle.
+        super.fillGradient(graphics, gradient, x, y, width, height);
+    }
+
+    private void fillLinearGradientNative(Object graphics, com.codename1.ui.LinearGradient g,
+            int x, int y, int width, int height) {
+        Graphics2D ng = (Graphics2D) getGraphics(graphics).create();
+        try {
+            float[] ep = new float[4];
+            g.computeShaderEndpoints(width, height, ep);
+            // Java2D's LinearGradientPaint requires distinct start/end points
+            // (rejects start == end). Fall back to drawing the first color if
+            // the gradient line collapses (zero-area rect, etc.).
+            if (Math.abs(ep[0] - ep[2]) < 0.001f && Math.abs(ep[1] - ep[3]) < 0.001f) {
+                ng.setColor(new Color(g.getColors()[0], true));
+                ng.fillRect(x, y, width, height);
+                return;
+            }
+            LinearGradientPaint paint = new LinearGradientPaint(
+                    new java.awt.geom.Point2D.Float(x + ep[0], y + ep[1]),
+                    new java.awt.geom.Point2D.Float(x + ep[2], y + ep[3]),
+                    g.getNormalizedPositions(), toAwtColors(g.getColors()),
+                    cycle(g.getCycleMethod()));
+            ng.setPaint(paint);
+            ng.fillRect(x, y, width, height);
+        } finally {
+            ng.dispose();
+        }
+    }
+
+    private void fillRadialGradientNative(Object graphics, com.codename1.ui.RadialGradient g,
+            int x, int y, int width, int height) {
+        Graphics2D ng = (Graphics2D) getGraphics(graphics).create();
+        try {
+            float[] geom = new float[4];
+            g.computeShaderRadii(width, height, geom);
+            float cx = geom[0], cy = geom[1], rx = geom[2], ry = geom[3];
+            float r = Math.max(rx, ry);
+            RadialGradientPaint paint = new RadialGradientPaint(
+                    new java.awt.geom.Point2D.Float(x + cx, y + cy),
+                    r <= 0 ? 1f : r,
+                    new java.awt.geom.Point2D.Float(x + cx, y + cy),
+                    g.getNormalizedPositions(), toAwtColors(g.getColors()),
+                    cycle(g.getCycleMethod()));
+            if (Math.abs(rx - ry) > 0.01f && rx > 0 && ry > 0) {
+                java.awt.geom.AffineTransform t = new java.awt.geom.AffineTransform();
+                t.translate(x + cx, y + cy);
+                t.scale(rx / r, ry / r);
+                t.translate(-(x + cx), -(y + cy));
+                ng.transform(t);
+            }
+            ng.setPaint(paint);
+            ng.fillRect(x, y, width, height);
+        } finally {
+            ng.dispose();
+        }
     }
 
     
@@ -10075,13 +11155,22 @@ public class JavaSEPort extends CodenameOneImplementation {
      * @inheritDoc
      */
     public void execute(String url) {
+        // Simulator-only intercept: a URL that matches a registered
+        // SimulatorHookExecutor entry is dispatched as a named hook
+        // (e.g. "bluetooth:item1") instead of being handed to the
+        // OS URL opener. SimulatorHookExecutor.execute returns false
+        // when no such hook is registered, so non-hook URLs fall
+        // through to the normal native behavior.
+        if (url != null && com.codename1.system.SimulatorHookExecutor.execute(url.trim())) {
+            return;
+        }
         try {
             url = url.trim();
             if(url.startsWith("file:")) {
                 if(!checkForPermission("android.permission.WRITE_EXTERNAL_STORAGE", "This is required to open the file")){
                     return;
                 }
-                
+
                 url = new File(unfile(url)).toURI().toURL().toExternalForm();
             }
             final String fUrl = url;
@@ -10090,7 +11179,7 @@ public class JavaSEPort extends CodenameOneImplementation {
                     launchBrowserThatWorks(fUrl);
                 }
             });
-            
+
         } catch (Exception ex) {
             ex.printStackTrace();
         }
@@ -11518,6 +12607,100 @@ public class JavaSEPort extends CodenameOneImplementation {
         return platformOverrides;
     }
 
+    private JavaSEBiometrics biometrics;
+    private JavaSESecureStorage secureStorage;
+    private JavaSENfc nfc;
+    private boolean biometricsBuildHintsInstalled;
+    private boolean nfcBuildHintsInstalled;
+
+    @Override
+    public Biometrics getBiometrics() {
+        installBiometricsBuildHintsIfNeeded();
+        if (biometrics == null) {
+            biometrics = new JavaSEBiometrics();
+        }
+        return biometrics;
+    }
+
+    @Override
+    public SecureStorage getSecureStorage() {
+        installBiometricsBuildHintsIfNeeded();
+        if (secureStorage == null) {
+            secureStorage = new JavaSESecureStorage((JavaSEBiometrics) getBiometrics());
+        }
+        return secureStorage;
+    }
+
+    @Override
+    public com.codename1.nfc.Nfc getNfc() {
+        installNfcBuildHintsIfNeeded();
+        if (nfc == null) {
+            nfc = new JavaSENfc();
+        }
+        return nfc;
+    }
+
+    /**
+     * The first time the app reaches the NFC API in the simulator, write
+     * placeholders for ios.NFCReaderUsageDescription if the developer has
+     * not supplied one. Apple rejects builds that ship Core NFC without
+     * the plist entry, so this keeps simulator-developed projects buildable
+     * on iOS without the developer remembering the build hint. The
+     * placeholder should be replaced with locale-specific copy before
+     * shipping.
+     */
+    private void installNfcBuildHintsIfNeeded() {
+        if (nfcBuildHintsInstalled) {
+            return;
+        }
+        nfcBuildHintsInstalled = true;
+        Map<String, String> existing = getProjectBuildHints();
+        if (existing == null) {
+            return;
+        }
+        if (!existing.containsKey("ios.NFCReaderUsageDescription")) {
+            try {
+                setProjectBuildHint(
+                        "ios.NFCReaderUsageDescription",
+                        "Hold near an NFC tag to continue");
+            } catch (RuntimeException ignore) {
+                // codenameone_settings.properties became unwritable; not
+                // fatal -- the device builder will surface the missing hint.
+            }
+        }
+    }
+
+    /**
+     * The first time the app reaches the biometric APIs in the simulator,
+     * add the iOS Face ID usage description to {@code codenameone_settings.properties}
+     * if the developer hasn't supplied one. Apple rejects builds that present
+     * the Face ID prompt without {@code NSFaceIDUsageDescription} set, so this
+     * keeps simulator-developed projects buildable on iOS without the user
+     * having to remember the build hint. They should overwrite the placeholder
+     * text before shipping.
+     */
+    private void installBiometricsBuildHintsIfNeeded() {
+        if (biometricsBuildHintsInstalled) {
+            return;
+        }
+        biometricsBuildHintsInstalled = true;
+        Map<String, String> existing = getProjectBuildHints();
+        if (existing == null) {
+            return;
+        }
+        if (!existing.containsKey("ios.NSFaceIDUsageDescription")) {
+            try {
+                setProjectBuildHint(
+                        "ios.NSFaceIDUsageDescription",
+                        "Authenticate to securely access your account");
+            } catch (RuntimeException ignore) {
+                // codenameone_settings.properties became unwritable between
+                // the read above and the write here; not fatal -- the device
+                // builder will warn if the hint is missing.
+            }
+        }
+    }
+
     public LocationManager getLocationManager() {
         if(!checkForPermission("android.permission.ACCESS_FINE_LOCATION", "This is required to get the location")){
             return null;
@@ -11785,6 +12968,26 @@ public class JavaSEPort extends CodenameOneImplementation {
     }
 
     @Override
+    protected com.codename1.io.wifi.WifiPlatform createWifiPlatform() {
+        return new com.codename1.impl.javase.connectivity.JavaSEWifiPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.wifi.WifiDirectPlatform createWifiDirectPlatform() {
+        return new com.codename1.impl.javase.connectivity.JavaSEWifiDirectPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.bonjour.BonjourPlatform createBonjourPlatform() {
+        return new com.codename1.impl.javase.connectivity.JavaSEBonjourPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.NetworkTypePlatform createNetworkTypePlatform() {
+        return new com.codename1.impl.javase.connectivity.JavaSENetworkTypePlatform();
+    }
+
+    @Override
     public void openImageGallery(final com.codename1.ui.events.ActionListener response){    
         if(!checkForPermission("android.permission.WRITE_EXTERNAL_STORAGE", "This is required to browse the photos")){
             return;
@@ -12023,6 +13226,11 @@ public class JavaSEPort extends CodenameOneImplementation {
         }
         checkCameraUsageDescription();
         capture(response, new String[] {"png", "jpg", "jpeg"}, "*.png;*.jpg;*.jpeg");
+    }
+
+    @Override
+    public com.codename1.impl.CameraImpl createCameraImpl() {
+        return new JavaSECameraImpl();
     }
     
     private void captureMulti(final com.codename1.ui.events.ActionListener response, final String[] imageTypes, final String desc) {
@@ -13881,13 +15089,38 @@ public class JavaSEPort extends CodenameOneImplementation {
     
     public Image gaussianBlurImage(Image image, float radius) {
         GaussianFilter gf = new GaussianFilter(radius);
-        Image bim = Image.createImage(image.getWidth(), image.getHeight());        
-        BufferedImage blurredImage = gf.filter((BufferedImage)image.getImage(), (BufferedImage)bim.getImage());        
+        Image bim = Image.createImage(image.getWidth(), image.getHeight());
+        BufferedImage blurredImage = gf.filter((BufferedImage)image.getImage(), (BufferedImage)bim.getImage());
         return new NativeImage(blurredImage);
     }
 
     public boolean isGaussianBlurSupported() {
         return true;
+    }
+
+    @Override
+    public boolean blurRegion(Object graphics, int x, int y, int width, int height, float radius) {
+        if (radius <= 0f || width <= 0 || height <= 0) {
+            return true;
+        }
+        Graphics2D ng = getGraphics(graphics);
+        // The target buffer the simulator paints into is typically a BufferedImage
+        // accessible via getDeviceConfiguration().createCompatibleImage during paint.
+        // For backdrop-filter we snapshot whatever the destination shows under the
+        // rectangle, blur it, and draw it back. Falling back to false signals the
+        // caller to use the snapshot+drawImage path instead.
+        try {
+            java.awt.geom.AffineTransform tx = ng.getTransform();
+            int sx = (int) Math.round(tx.getTranslateX()) + x;
+            int sy = (int) Math.round(tx.getTranslateY()) + y;
+            BufferedImage snap = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+            java.awt.GraphicsConfiguration gc = ng.getDeviceConfiguration();
+            BufferedImage dest = (gc != null) ? gc.createCompatibleImage(width, height, java.awt.Transparency.TRANSLUCENT) : snap;
+            // Java2D doesn't easily let us read back from the destination - fall back.
+            return false;
+        } catch (Throwable t) {
+            return false;
+        }
     }
  
     class NativeImage extends Image {
@@ -14584,6 +15817,13 @@ public class JavaSEPort extends CodenameOneImplementation {
 
     @Override
     public Boolean canExecute(String url) {
+        // If this is a registered simulator hook URL, report it as
+        // executable up-front so a cross-platform CN1 UnitTest can use
+        // CN.canExecute(...) to gate hook calls behind a "we're in the
+        // simulator" check without exception-handling.
+        if (url != null && com.codename1.system.SimulatorHookExecutor.isRegistered(url.trim())) {
+            return Boolean.TRUE;
+        }
         if(!url.startsWith("http")) {
             int pos = url.indexOf(":");
             if(pos > -1) {
@@ -15373,7 +16613,128 @@ public class JavaSEPort extends CodenameOneImplementation {
     @Override
     public void nativeBrowserWindowRemoveCloseListener(Object window, com.codename1.ui.events.ActionListener l) {
         ((AbstractBrowserWindowSE)window).removeCloseListener(l);
-        
+
     }
     // END NATIVE BROWSER WINDOW METHODS---------------------------------------------------------
+
+    // ================================================================
+    // Crypto bridge -- routes the com.codename1.security API onto the
+    // JCE/JDK crypto provider available on JavaSE/Android. iOS does
+    // not reach this code path; it overrides the same methods on
+    // CodenameOneImplementation via IOSImplementation + CN1Crypto.{h,m}.
+
+    private static java.security.SecureRandom javaseSecureRandom;
+    private static final Object javaseSecureRandomSync = new Object();
+
+    private static java.security.SecureRandom javaseSecureRandom() {
+        synchronized (javaseSecureRandomSync) {
+            if (javaseSecureRandom == null) {
+                javaseSecureRandom = new java.security.SecureRandom();
+            }
+            return javaseSecureRandom;
+        }
+    }
+
+    @Override
+    public void secureRandomBytes(byte[] out) {
+        if (out == null) return;
+        javaseSecureRandom().nextBytes(out);
+    }
+
+    @Override
+    public byte[] aesEncrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] plaintext) {
+        return javaseAes(transformation, key, iv, aad, plaintext, javax.crypto.Cipher.ENCRYPT_MODE);
+    }
+
+    @Override
+    public byte[] aesDecrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] ciphertext) {
+        return javaseAes(transformation, key, iv, aad, ciphertext, javax.crypto.Cipher.DECRYPT_MODE);
+    }
+
+    private static byte[] javaseAes(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] input, int mode) {
+        try {
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(transformation);
+            javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(key, "AES");
+            String tu = transformation == null ? "" : transformation.toUpperCase();
+            if (tu.indexOf("GCM") >= 0) {
+                cipher.init(mode, keySpec, new javax.crypto.spec.GCMParameterSpec(128, iv));
+            } else if (iv != null) {
+                cipher.init(mode, keySpec, new javax.crypto.spec.IvParameterSpec(iv));
+            } else {
+                cipher.init(mode, keySpec);
+            }
+            if (aad != null && aad.length > 0) {
+                cipher.updateAAD(aad);
+            }
+            return cipher.doFinal(input);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("AES " + (mode == javax.crypto.Cipher.ENCRYPT_MODE ? "encrypt" : "decrypt") + " failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[] rsaEncrypt(String transformation, byte[] publicKeyX509, byte[] plaintext) {
+        try {
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(transformation);
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("RSA");
+            java.security.PublicKey key = kf.generatePublic(new java.security.spec.X509EncodedKeySpec(publicKeyX509));
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key);
+            return cipher.doFinal(plaintext);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("RSA encrypt failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[] rsaDecrypt(String transformation, byte[] privateKeyPkcs8, byte[] ciphertext) {
+        try {
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(transformation);
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("RSA");
+            java.security.PrivateKey key = kf.generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privateKeyPkcs8));
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, key);
+            return cipher.doFinal(ciphertext);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("RSA decrypt failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[] cryptoSign(String algorithm, String keyAlgorithm, byte[] privateKeyPkcs8, byte[] data) {
+        try {
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance(keyAlgorithm);
+            java.security.PrivateKey priv = kf.generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privateKeyPkcs8));
+            java.security.Signature sig = java.security.Signature.getInstance(algorithm);
+            sig.initSign(priv);
+            sig.update(data);
+            return sig.sign();
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("sign failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public boolean cryptoVerify(String algorithm, String keyAlgorithm, byte[] publicKeyX509, byte[] data, byte[] signature) {
+        try {
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance(keyAlgorithm);
+            java.security.PublicKey pub = kf.generatePublic(new java.security.spec.X509EncodedKeySpec(publicKeyX509));
+            java.security.Signature sig = java.security.Signature.getInstance(algorithm);
+            sig.initVerify(pub);
+            sig.update(data);
+            return sig.verify(signature);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("verify failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[][] generateRsaKeyPair(int bits) {
+        try {
+            java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("RSA");
+            kpg.initialize(bits);
+            java.security.KeyPair kp = kpg.generateKeyPair();
+            return new byte[][]{ kp.getPublic().getEncoded(), kp.getPrivate().getEncoded() };
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("RSA keypair generation failed: " + e.getMessage());
+        }
+    }
 }

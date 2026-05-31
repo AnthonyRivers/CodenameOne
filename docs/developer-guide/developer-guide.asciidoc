@@ -75,6 +75,8 @@ include::Miscellaneous-Features.asciidoc[]
 
 include::performance.asciidoc[]
 
+include::Testing-with-JUnit.adoc[]
+
 include::Monetization.asciidoc[]
 
 include::Advanced-Topics-Under-The-Hood.asciidoc[]
@@ -82,9 +84,31 @@ include::Advanced-Topics-Under-The-Hood.asciidoc[]
 
 include::security.asciidoc[]
 
+include::Biometric-Authentication.asciidoc[]
+
+include::Authentication-And-Identity.asciidoc[]
+
+include::Deep-Links-Routing.asciidoc[]
+
+include::Annotation-JSON-XML-Mapping.asciidoc[]
+
+include::Annotation-Component-Binding.asciidoc[]
+
+include::Annotation-SQLite-ORM.asciidoc[]
+
+include::Ai-And-Speech.asciidoc[]
+
+include::Near-Field-Communication.asciidoc[]
+
+include::Network-Connectivity.asciidoc[]
+
 include::signing.asciidoc[]
 
 include::Working-With-iOS.asciidoc[]
+
+include::On-Device-Debugging.asciidoc[]
+
+include::On-Device-Debugging-Android.asciidoc[]
 
 include::Working-With-Javascript.asciidoc[]
 

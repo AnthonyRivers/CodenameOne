@@ -482,7 +482,15 @@ public class AndroidAsyncView extends ViewGroup implements CodenameOneSurface {
             return super.dispatchTouchEvent(event);
         }
         return res;
-        
+
+    }
+
+    @Override
+    public boolean onHoverEvent(MotionEvent event) {
+        if (cn1View.onHoverEvent(event)) {
+            return true;
+        }
+        return super.onHoverEvent(event);
     }
 
     @Override
@@ -540,6 +548,14 @@ public class AndroidAsyncView extends ViewGroup implements CodenameOneSurface {
         }
     }
     
+
+    static boolean isExtendedGradientType(byte bgType) {
+        return bgType == Style.BACKGROUND_GRADIENT_LINEAR
+                || bgType == Style.BACKGROUND_GRADIENT_RADIAL_FULL
+                || bgType == Style.BACKGROUND_GRADIENT_CONIC
+                || bgType == Style.BACKGROUND_GRADIENT_REPEATING_LINEAR
+                || bgType == Style.BACKGROUND_GRADIENT_REPEATING_RADIAL;
+    }
 
     class AsyncGraphics extends AndroidGraphics {
 
@@ -772,6 +788,45 @@ public class AndroidAsyncView extends ViewGroup implements CodenameOneSurface {
                     return "resetAffine";
                 }
             });
+        }
+
+        private class SavedAsyncClip {
+            Rectangle clip;
+            Path clipP;
+            GeneralPath clipGP;
+            boolean clipIsPath;
+        }
+
+        private final java.util.ArrayDeque<SavedAsyncClip> savedClipStack =
+                new java.util.ArrayDeque<SavedAsyncClip>();
+
+        @Override
+        public void pushClip() {
+            SavedAsyncClip s = new SavedAsyncClip();
+            if (clip != null) {
+                s.clip = new Rectangle(clip);
+            }
+            if (clipP != null) {
+                s.clipP = new Path(clipP);
+            }
+            if (clipGP != null) {
+                s.clipGP = new GeneralPath(clipGP);
+            }
+            s.clipIsPath = clipIsPath;
+            savedClipStack.push(s);
+        }
+
+        @Override
+        public void popClip() {
+            if (savedClipStack.isEmpty()) {
+                return;
+            }
+            SavedAsyncClip s = savedClipStack.pop();
+            clip = s.clip;
+            clipP = s.clipP;
+            clipGP = s.clipGP;
+            clipIsPath = s.clipIsPath;
+            clipFresh = false;
         }
 
 
@@ -1127,6 +1182,27 @@ public class AndroidAsyncView extends ViewGroup implements CodenameOneSurface {
                 }
             });
         }
+
+        @Override
+        public void fillGradient(final com.codename1.ui.Gradient gradient, final int x, final int y, final int width, final int height) {
+            if (alpha == 0 || gradient == null) {
+                return;
+            }
+            final int al = alpha;
+            // Capture a defensive copy so async replay sees the gradient as it
+            // was when the op was queued, immune to caller mutation.
+            final com.codename1.ui.Gradient g = gradient.copy();
+            pendingRenderingOperations.add(new AsyncOp(clip, clipP, clipIsPath) {
+                @Override
+                public void execute(AndroidGraphics underlying) {
+                    underlying.setAlpha(al);
+                    underlying.fillGradient(g, x, y, width, height);
+                }
+                public String toString() {
+                    return "fillGradient";
+                }
+            });
+        }
         
         class AndroidStyleCache {
             AsyncPaintPosition backgroundPainter;
@@ -1272,10 +1348,19 @@ public class AndroidAsyncView extends ViewGroup implements CodenameOneSurface {
                 final float backgroundGradientRelativeX = s.getBackgroundGradientRelativeX();
                 final float backgroundGradientRelativeY = s.getBackgroundGradientRelativeY();
                 final float backgroundGradientRelativeSize = s.getBackgroundGradientRelativeSize();
+                // Capture extended gradient so we can paint new gradient
+                // types (multi-stop, angled, conic, repeating) from the async path.
+                // Defensive copy keeps the closure immune to later Style mutations.
+                final com.codename1.ui.Gradient extGradient =
+                        s.getGradient() == null ? null : s.getGradient().copy();
                 pendingRenderingOperations.add(new AsyncOp(clip, clipP, clipIsPath) {
                     @Override
                     public void execute(AndroidGraphics underlying) {
                         underlying.setAlpha(al);
+                        if (bgImage == null && extGradient != null && isExtendedGradientType(backgroundType)) {
+                            underlying.fillGradient(extGradient, x, y, width, height);
+                            return;
+                        }
                         underlying.paintComponentBackground(backgroundType, bgImage, bgColor, bgTransparency,
                                 backgroundGradientStartColor, backgroundGradientEndColor,
                                 backgroundGradientRelativeX, backgroundGradientRelativeY,

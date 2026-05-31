@@ -52,11 +52,20 @@
     <profiles>
         <profile>
             <id>local-dev-javase</id>
+            <!--
+              Activate whenever cn1.binaries is in play, mirroring the
+              maven/android compile-android profile. The old activation only
+              fired on -Dcodename1.platform=javase, which scripts/setup-workspace.sh
+              passes to its first mvn invocation but not to the second (the
+              codenameone-maven-plugin -am build). That second pass would then
+              rebuild javase without jcef / jfxrt on the classpath and break on
+              the simulator's CEF / JavaFX sources whenever any earlier change
+              tripped incremental compilation into a full rebuild, e.g. the
+              new com/codename1/testing/junit/ sources in this PR.
+            -->
             <activation>
-                <property>
-                    <name>codename1.platform</name>
-                    <value>javase</value>
-                </property>
+                <file><exists>${cn1.binaries}</exists></file>
+                <property><name>cn1.binaries</name></property>
             </activation>
             <dependencies>
                 <dependency>
@@ -101,10 +110,15 @@
             <version>2.1.1e</version>
             <scope>provided</scope>
         </dependency>
+        <!-- JUnit Jupiter is "provided" so com.codename1.testing.junit.*
+             support classes compile against it, but downstream apps must
+             add their own JUnit dependency in test scope. This keeps the
+             simulator's runtime classpath free of JUnit for apps that
+             don't write JUnit tests. -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
     <properties>
@@ -126,17 +140,6 @@
         </resources>
         <plugins>
             <plugin>
-                <!-- The parent pom pins surefire to 2.21.0 which lacks the
-                     JUnit Jupiter provider this module's tests rely on (the
-                     pre-existing CSSWatcherTest and the MavenUtilsTest added
-                     alongside the CSSWatcher live-reload fixes). Bump to a
-                     surefire version with native Jupiter discovery so these
-                     tests actually execute. -->
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.2.5</version>
-            </plugin>
-            <plugin>
                 <artifactId>maven-antrun-plugin</artifactId>
                 <executions>
                     <execution>
@@ -157,11 +160,10 @@
                                      simulator fat jar so JavaSEPort.loadSkinFile can
                                      load the right .res based on the current skin's
                                      platformName (or the Simulator "Native Theme"
-                                     menu override). failonerror=false lets the
-                                     simulator still build if
-                                     scripts/build-native-themes.sh hasn't produced
-                                     the modern .res files yet. -->
-                                <copy todir="${project.build.outputDirectory}" failonerror="false">
+                                     menu override). All .res files are committed
+                                     under Themes/; the modern pair is regenerated
+                                     by .github/workflows/native-themes-sync.yml. -->
+                                <copy todir="${project.build.outputDirectory}">
                                     <fileset dir="${project.basedir}/../../Themes">
                                         <include name="iOSModernTheme.res"/>
                                         <include name="AndroidMaterialTheme.res"/>

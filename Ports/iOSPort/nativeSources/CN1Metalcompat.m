@@ -755,13 +755,81 @@ void CN1MetalTileImage(id<MTLTexture> texture, int alpha,
 // the failure rather than papering over it with a different pipeline
 // that would silently mask the bug.
 
+// Returns the effective screen-pixel scale baked into the current
+// transform. The vertex shader applies `projection * modelView *
+// transform * pos`; projection / modelView are stable per frame and
+// expressed in framebuffer units, so any *additional* scaling comes
+// from `currentTransform`. For text rendering we want to know that
+// effective scale up front so the glyph atlas can rasterise at the
+// matching pixel size; otherwise the atlas glyph art (rasterised at
+// font.pointSize) is sampled through a stretched quad and the glyph
+// turns into a smear at every `g.setTransform(scale)` site -- e.g.
+// the SVG transcoder painting `<text>` under a viewBox-to-display
+// scale, which is the most visible offender.
+//
+// Pulls a uniform scale by averaging the magnitudes of the two basis
+// vectors of the upper-left 2x2 (sx along the X column, sy along the
+// Y column). Shear-only or pure-rotation matrices return 1 because
+// both column magnitudes stay at 1; pure scale returns the scale.
+// We do *not* try to handle non-uniform scale separately -- the
+// glyph atlas slot key is one float (pointSize), so even if the
+// SVG draws with sx != sy we have to pick one. Going with the
+// geometric mean keeps the rasterised glyph close to either bound
+// and the residual GPU stretch only kicks in along the dimension
+// that's farther from the mean.
+static inline float currentTransformGlyphScale(void) {
+    float c0x = currentTransform.columns[0].x;
+    float c0y = currentTransform.columns[0].y;
+    float c1x = currentTransform.columns[1].x;
+    float c1y = currentTransform.columns[1].y;
+    float sx = sqrtf(c0x * c0x + c0y * c0y);
+    float sy = sqrtf(c1x * c1x + c1y * c1y);
+    float s = (sx + sy) * 0.5f;
+    // Reject NaN / inf / non-positive values: any of those would
+    // poison `font.pointSize * s` below and produce a UIFont with
+    // bad metrics that hangs the CTLine layout. `isfinite` is true
+    // only for finite numbers; treat anything else as "use unscaled
+    // font" by returning 1.0 (the `useScaledFont` gate at the call
+    // site clears that to the fast path).
+    if (!isfinite(s) || s <= 0.0f) return 1.0f;
+    // Cap at 8x to keep the atlas from rasterising absurdly large
+    // bitmaps for a runaway transform; well past 8x the difference
+    // between "atlas-perfect" and "sampled-and-filtered" is below
+    // what the user can see anyway.
+    if (s < 1.0f) s = 1.0f;     // No down-rasterising; 1px atlas is fine for downscale.
+    if (s > 8.0f) s = 8.0f;
+    return s;
+}
+
 void CN1MetalDrawString(NSString *str, UIFont *font, int color, int alpha, int x, int y) {
     if (str == nil || font == nil || str.length == 0) return;
 
-    CN1MetalGlyphAtlas *atlas = [CN1MetalGlyphAtlas atlasForFont:font];
+    // CoreText shapes glyphs and the atlas rasterises them at font.pointSize
+    // — but the active Graphics transform may be scaling the whole drawing
+    // up before the framebuffer write. If we hand the shader a quad sized to
+    // the unscaled glyph and let the transform stretch it on the GPU, the
+    // result is a smeared/blurry glyph (Codename One's SVG transcoder paints
+    // viewBox-relative text through `g.setTransform(scale*translate)`, so the
+    // screen scale is routinely 2x-4x). Detect the scale baked into
+    // `currentTransform` and rasterise the atlas at the effective pixel size
+    // so the shader transform produces a 1:1 sample. We then divide the
+    // returned glyph metrics back down by the same factor so the vertex
+    // coords stay in unscaled space — the GPU re-applies `currentTransform`
+    // for free and the final on-screen position matches the unscaled path.
+    float glyphScale = currentTransformGlyphScale();
+    BOOL useScaledFont = (glyphScale > 1.01f);
+    UIFont *renderFont = useScaledFont
+        ? [font fontWithSize:font.pointSize * glyphScale]
+        : font;
+    if (renderFont == nil) {
+        renderFont = font;
+        useScaledFont = NO;
+    }
+
+    CN1MetalGlyphAtlas *atlas = [CN1MetalGlyphAtlas atlasForFont:renderFont];
     if (atlas == nil) {
         NSLog(@"CN1MetalDrawString: no atlas available for font %@ pt=%g; string skipped",
-              font.fontName, (double)font.pointSize);
+              renderFont.fontName, (double)renderFont.pointSize);
         return;
     }
 
@@ -774,7 +842,7 @@ void CN1MetalDrawString(NSString *str, UIFont *font, int color, int alpha, int x
     // fresh form, which surfaced as the TL panel of graphics-draw-string-
     // decorated rendering larger/wider glyphs than TR/BL/BR despite
     // identical Java state.
-    NSDictionary *attrs = @{ (__bridge NSString *)kCTFontAttributeName: font };
+    NSDictionary *attrs = @{ (__bridge NSString *)kCTFontAttributeName: renderFont };
     CFAttributedStringRef attrStr = CFAttributedStringCreate(NULL,
                                                              (__bridge CFStringRef)str,
                                                              (__bridge CFDictionaryRef)attrs);
@@ -798,7 +866,14 @@ void CN1MetalDrawString(NSString *str, UIFont *font, int color, int alpha, int x
     // (not CTFontGetAscent) is intentional — UIKit's metric is what
     // drawAtPoint references and the values can disagree slightly across
     // fonts.
+    //
+    // Use the ORIGINAL font's ascender (and the original pointSize) so the
+    // baseline lands where the caller-side framework expects, even when we
+    // upscaled the atlas. The atlas-internal metrics (renderFont) reflect
+    // the rasterised size; we divide them by `glyphScale` below to bring
+    // them back into caller-side coords.
     float baselineY = (float)y + (float)font.ascender;
+    float invScale = useScaledFont ? (1.0f / glyphScale) : 1.0f;
 
     simd_float4 colorV = premultipliedColor(color, alpha);
     int textureW = atlas.textureWidth;
@@ -838,11 +913,24 @@ void CN1MetalDrawString(NSString *str, UIFont *font, int color, int alpha, int x
             //   bbox-left-on-screen  = x + posX + bearingX
             //   bbox-top-on-screen   = baselineY - posY - (bearingY + bbox.height)
             // Slot extends 1px above and to the left of the bbox.
-            float gx = (float)x + (float)posPtr[i].x + slot.bearingX - 1.0f;
-            float gy = baselineY - (float)posPtr[i].y
-                       - (slot.bearingY + slot.bboxHeight) - 1.0f;
-            float gw = (float)slot.width;
-            float gh = (float)slot.height;
+            //
+            // When the atlas was rasterised at the upscaled size, the
+            // CoreText positions and slot metrics are in renderFont-pixel
+            // space (which is glyphScale times the caller-side pixel space).
+            // Divide each one back down by glyphScale so the emitted vertex
+            // coords live in caller-side space — the vertex shader will
+            // re-apply currentTransform (the same scale we factored out) and
+            // produce a quad of the correct on-screen size, sampling
+            // 1:1 against the now-matching atlas.
+            float posX = (float)posPtr[i].x * invScale;
+            float posY = (float)posPtr[i].y * invScale;
+            float bearingX = slot.bearingX * invScale;
+            float bearingY = slot.bearingY * invScale;
+            float bboxHeight = slot.bboxHeight * invScale;
+            float gx = (float)x + posX + bearingX - invScale;
+            float gy = baselineY - posY - (bearingY + bboxHeight) - invScale;
+            float gw = (float)slot.width * invScale;
+            float gh = (float)slot.height * invScale;
 
             float vertices[8] = {
                 gx,        gy,
@@ -981,6 +1069,114 @@ void CN1MetalDrawGradient(int type, int startColor, int endColor,
         }
     }
 }
+
+// --------------- Multi-stop gradient (CSS Gradient API) ---------------
+//
+// Single pipeline handles linear / radial / conic. Header + geometry +
+// up-to-8 stops are packed into 4 fragment constant buffers (see
+// cn1_fs_multistop_gradient in CN1MetalShaders.metal for the layout).
+// Inputs that exceed CN1_METAL_GRAD_MAX_STOPS are downsampled by the
+// caller -- we don't silently truncate here because the gradient looks
+// visibly wrong with a hard truncation.
+
+void CN1MetalFillGradient(int kind,
+                          int stopCount,
+                          const float *positions,
+                          const float *premultipliedRgba,
+                          int cycleMethod,
+                          float angleDegreesOrFromAngle,
+                          float cx, float cy, float rx, float ry,
+                          int shape,
+                          int destX, int destY, int destW, int destH) {
+    if (activeEncoder == nil || pipelineCache == nil) return;
+    if (destW <= 0 || destH <= 0) return;
+    if (stopCount < 2 || positions == NULL || premultipliedRgba == NULL) return;
+    if (stopCount > CN1_METAL_GRAD_MAX_STOPS) {
+        stopCount = CN1_METAL_GRAD_MAX_STOPS;
+    }
+    id<MTLRenderPipelineState> state = [pipelineCache pipelineFor:CN1MetalPipelineMultiStopGradient];
+    if (state == nil) return;
+    bindPipelineStateIfChanged(state);
+
+    float vertices[8] = {
+        (float)destX,             (float)destY,
+        (float)(destX + destW),   (float)destY,
+        (float)destX,             (float)(destY + destH),
+        (float)(destX + destW),   (float)(destY + destH)
+    };
+    static const float texcoords[8] = {
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        0.0f, 1.0f,
+        1.0f, 1.0f
+    };
+
+    simd_float4 header = (simd_float4){
+        (float)kind,
+        (float)cycleMethod,
+        (float)stopCount,
+        (float)shape
+    };
+
+    simd_float4 geom;
+    if (kind == 0) {
+        // CSS 0deg points up; the shader uses (sin, -cos) so that
+        // dot(p, axis) is positive going from top to bottom for 180deg
+        // and from left to right for 90deg.
+        float rad = angleDegreesOrFromAngle * (float)(M_PI / 180.0);
+        geom = (simd_float4){ sinf(rad), -cosf(rad), 0.0f, 0.0f };
+    } else if (kind == 1) {
+        geom = (simd_float4){ cx, cy, rx, ry };
+    } else {
+        float rad = angleDegreesOrFromAngle * (float)(M_PI / 180.0);
+        geom = (simd_float4){ cx, cy, rad, 0.0f };
+    }
+
+    // Pack positions into ceil(N/4) float4s. Pad unused slots with the
+    // last position so the shader's tail walk falls through cleanly even
+    // if stopCount happens to coincide with a multiple of 4.
+    simd_float4 packedPositions[2];
+    float lastPos = positions[stopCount - 1];
+    for (int i = 0; i < 8; i++) {
+        float v = (i < stopCount) ? positions[i] : lastPos;
+        int p = i >> 2;
+        int s = i & 3;
+        if (s == 0) packedPositions[p].x = v;
+        else if (s == 1) packedPositions[p].y = v;
+        else if (s == 2) packedPositions[p].z = v;
+        else             packedPositions[p].w = v;
+    }
+
+    simd_float4 packedColors[CN1_METAL_GRAD_MAX_STOPS];
+    for (int i = 0; i < CN1_METAL_GRAD_MAX_STOPS; i++) {
+        int srcIdx = (i < stopCount) ? i : stopCount - 1;
+        packedColors[i] = (simd_float4){
+            premultipliedRgba[srcIdx * 4 + 0],
+            premultipliedRgba[srcIdx * 4 + 1],
+            premultipliedRgba[srcIdx * 4 + 2],
+            premultipliedRgba[srcIdx * 4 + 3]
+        };
+    }
+
+    [activeEncoder setVertexBytes:vertices length:sizeof(float) * 8 atIndex:0];
+    uploadMatricesIfChanged(1);
+    [activeEncoder setVertexBytes:texcoords length:sizeof(float) * 8 atIndex:2];
+    [activeEncoder setFragmentBytes:&header length:sizeof(header) atIndex:0];
+    [activeEncoder setFragmentBytes:&geom length:sizeof(geom) atIndex:1];
+    [activeEncoder setFragmentBytes:packedPositions length:sizeof(packedPositions) atIndex:2];
+    [activeEncoder setFragmentBytes:packedColors length:sizeof(packedColors) atIndex:3];
+    [activeEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+}
+
+// Gaussian blur is intentionally not implemented at the Metal layer.
+// IOSNative.gausianBlurImage routes everything through CIGaussianBlur,
+// which is itself Metal-backed under the hood (Apple uses
+// MPSImageGaussianBlur internally) and matches the GL reference's
+// visual output - including the soft halo produced by CIGaussianBlur's
+// output-extent expansion that neither a hand-rolled separable
+// fragment-shader convolution nor a direct MPSImageGaussianBlur call
+// reproduces without significant additional bookkeeping (sigma
+// scaling, padded dst).
 
 // --------------- Alpha mask rendering (path-based shapes) ---------------
 
@@ -1235,7 +1431,32 @@ void CN1MetalEnsureMutableTexture(GLUIImage *image, int width, int height) {
                 seedPass.colorAttachments[0].texture = tex;
                 seedPass.colorAttachments[0].loadAction = MTLLoadActionLoad;
                 seedPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+                // Pipelines in CN1MetalPipelineCache declare
+                // stencilAttachmentPixelFormat=Stencil8 (polygon-clip #3921),
+                // so every pass that binds one must attach a Stencil8 texture
+                // or Metal aborts in setRenderPipelineState: with a pixel-
+                // format mismatch (issue #5103). The seed draw never engages
+                // the stencil test, so a throwaway clear-on-load attachment
+                // is sufficient.
+                id<MTLTexture> seedStencilTex = nil;
+                MTLTextureDescriptor *seedStencilDesc = [MTLTextureDescriptor
+                    texture2DDescriptorWithPixelFormat:MTLPixelFormatStencil8
+                    width:(NSUInteger)width height:(NSUInteger)height mipmapped:NO];
+                seedStencilDesc.usage = MTLTextureUsageRenderTarget;
+                seedStencilDesc.storageMode = MTLStorageModePrivate;
+                seedStencilTex = [device newTextureWithDescriptor:seedStencilDesc];
+                if (seedStencilTex != nil) {
+                    seedPass.stencilAttachment.texture = seedStencilTex;
+                    seedPass.stencilAttachment.loadAction = MTLLoadActionClear;
+                    seedPass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+                    seedPass.stencilAttachment.clearStencil = 0;
+                }
                 id<MTLRenderCommandEncoder> seedEnc = [setupCb renderCommandEncoderWithDescriptor:seedPass];
+#ifndef CN1_USE_ARC
+                // renderCommandEncoderWithDescriptor: retains attachments for
+                // the duration of the encoded pass; drop our +1 now.
+                [seedStencilTex release];
+#endif
                 [seedEnc setViewport:(MTLViewport){0.0, 0.0, (double)width, (double)height, 0.0, 1.0}];
                 [seedEnc setRenderPipelineState:seedState];
 

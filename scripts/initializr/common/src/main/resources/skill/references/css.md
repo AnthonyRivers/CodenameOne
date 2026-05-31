@@ -165,9 +165,50 @@ Alpha: use `rgba(r, g, b, a)` where `a` is 0–255 in some compiler versions and
 
 ## Gradients
 
-CN1 supports a small subset of gradient backgrounds. Linear and radial gradients can be configured per UIID, but the syntax is more restricted than full CSS. The canonical way to set a gradient is via the `Style` class (see `Style.setBackgroundType` constants — `BACKGROUND_GRADIENT_LINEAR_VERTICAL`, `BACKGROUND_GRADIENT_LINEAR_HORIZONTAL`, `BACKGROUND_GRADIENT_RADIAL`). The CSS compiler accepts an equivalent shorthand for these — start with a constant lookup in the `Style` JavaDoc and translate to CSS only after confirming the variant is supported.
+CSS gradients compile to a native `theme.res` descriptor. Supported functions:
 
-For arbitrary CSS-style gradients (`linear-gradient(135deg, ...)` with multiple stops), the supported path is a programmatic `Painter` set via `comp.getAllStyles().setBgPainter(...)` — it's not a CSS feature.
+- `linear-gradient(<angle>, <stops...>)` — angle in `deg` / `rad` / `turn`, or `to <side>` / `to <side1> <side2>`.
+- `radial-gradient([circle|ellipse] [<extent>] [at <position>], <stops...>)` — extent: `closest-side` / `closest-corner` / `farthest-side` / `farthest-corner` (default), or explicit radii in percent.
+- `conic-gradient([from <angle>] [at <position>], <stops...>)` — 0° points up, sweep clockwise.
+- `repeating-linear-gradient(...)` / `repeating-radial-gradient(...)` — stop pattern tiles outward.
+
+```css
+HeroCard      { background: linear-gradient(135deg, #ff0080 0%, #ff8c00 50%, #40e0d0 100%); }
+Spotlight     { background: radial-gradient(circle farthest-corner at 30% 30%, #fff, #001 70%); }
+ColorWheel    { background: conic-gradient(from 0deg at 50% 50%, red, yellow, green, blue, red); }
+DiagonalStripes { background: repeating-linear-gradient(45deg, #eee 0%, #ccc 10%); }
+```
+
+Programmatically, use the `Gradient` hierarchy (`LinearGradient`, `RadialGradient`, `ConicGradient` — `Paint` subclasses analogous to `Shape`):
+
+```java
+LinearGradient g = new LinearGradient(135f,
+        new int[]   { 0xffff0080, 0xffff8c00, 0xff40e0d0 },
+        new float[] { 0f,         0.5f,       1f });
+card.getAllStyles().setBackgroundType(Style.BACKGROUND_GRADIENT_LINEAR);
+card.getAllStyles().setGradient(g);
+
+// Or fill a rect directly via Graphics:
+graphics.fillGradient(g, 0, 0, w, h);
+```
+
+CSS background types map 1:1: `BACKGROUND_GRADIENT_LINEAR` / `_REPEATING_LINEAR` ↔ `LinearGradient`, `BACKGROUND_GRADIENT_RADIAL_FULL` / `_REPEATING_RADIAL` ↔ `RadialGradient`, `BACKGROUND_GRADIENT_CONIC` ↔ `ConicGradient`.
+
+## Filter and backdrop-filter
+
+`filter` and `backdrop-filter` accept a chain of functions:
+
+```css
+Overlay   { background: rgba(0, 0, 0, 0.4); backdrop-filter: blur(12px); }
+BlurImg   { filter: blur(4px); }
+Faded     { filter: brightness(0.6) contrast(1.2); }
+Grayscale { filter: grayscale(1); }
+Sepia     { filter: sepia(0.8) saturate(1.1); }
+```
+
+Supported functions: `blur(<length>)`, `brightness(<number>)`, `contrast(<number>)`, `grayscale(<number|%>)`, `hue-rotate(<angle>)`, `invert(<number|%>)`, `opacity(<number|%>)`, `saturate(<number>)`, `sepia(<number|%>)`.
+
+`filter:` applies to the component's own painted content; `backdrop-filter:` applies to whatever is painted behind. Radii / matrices are exposed on `Style` (`getFilterBlurRadius()`, `getFilterColorMatrix()`, etc.) and round-trip through `theme.res`.
 
 ## Dark mode
 
@@ -242,6 +283,53 @@ Image logo = Resources.getGlobalResources().getImage("logo");
 Use multi-images for everything that ships with the app (icons, decorative graphics, splash artwork). For network-loaded images, `URLImage` handles its own density-aware caching.
 
 See `references/java-api-subset.md` *Multi-images* for the full density table.
+
+### SVG icons — build-time transcoder
+
+Drop an `.svg` file into `common/src/main/css/` and reference it from CSS the same way you would a PNG:
+
+```css
+HomeIcon {
+    background: url(home.svg);
+    cn1-svg-width: 6mm;        /* recommended: pin physical size */
+    cn1-svg-height: 6mm;
+    bg-type: image_scaled_fit;
+}
+```
+
+The build-time SVG transcoder parses each referenced `.svg` and emits a Java `com.codename1.ui.GeneratedSVGImage` subclass that renders the vector through the standard `Graphics` shape API. A generated `SVGRegistry` is installed automatically into every `Resources` opened in the VM — no glue code in app land. Fetching is identical to multi-images:
+
+```java
+Image home = Resources.getGlobalResources().getImage("home.svg");
+```
+
+**Sizing keys** (mirror the multi-image conventions):
+
+- `cn1-svg-width` / `cn1-svg-height` in **mm** — recommended; the value is routed through `Display.convertToPixels()` so the icon comes out at the same physical size on every device. Use this for any SVG with non-standard intrinsic dimensions (most third-party SVGs).
+- `cn1-source-dpi: <bucket>` — declares which density bucket the SVG was authored for; runtime scales by `deviceDensity / sourceDensity`. Use the same keywords multi-images do (`medium`, `high`, `very-high`, `hd`, `2hd`, `4k`, etc.).
+- No hint — the SVG's declared pixel dimensions are treated as `DENSITY_MEDIUM` design pixels and scaled to the device.
+
+**SVG coverage**: rect / circle / ellipse / line / polyline / polygon / path (full mini-language including arcs), affine transforms (translate / rotate / scale / skew / matrix), linear gradients (shape-clipped), opacity / fill-opacity / stroke-opacity (animatable), `<text>` with anchor / font-size / font-weight / font-style, SMIL animations (`<animate>` of numeric attrs, `<animateTransform>` translate / scale / rotate, `<set>`). Not (yet) supported: `<filter>` primitives, alpha `<mask>`. Radial gradients fall back to first-stop color.
+
+For the full feature matrix and troubleshooting, point users to `docs/developer-guide/SVG-Transcoder.asciidoc`.
+
+### Lottie — same pipeline, same URL syntax
+
+The `transcode-svg` goal also picks up Lottie / Bodymovin JSON (`.json`, `.lottie`). The file is lowered into the same SVG model and registered in the same `SVGRegistry`, so the developer-facing API is identical to the SVG path:
+
+```css
+SpinnerStyle { background: url(spinner.json); cn1-svg-width: 12mm; cn1-svg-height: 12mm; bg-type: image_scaled_fit; }
+```
+
+```java
+Image spin = Resources.getGlobalResources().getImage("spinner.json");
+```
+
+Source directories: `common/src/main/lottie/` for Lottie, or drop next to `theme.css` like SVGs.
+
+**Lottie coverage**: shape layers (rect / ellipse / bezier path) with solid fills and strokes, layer transform (anchor / position / scale / rotation / opacity), animated rotation / position / scale collapsed to a first-to-last linear loop over the comp duration. Color / opacity animations, bezier easing, multi-keyframe paths (3+ keys), trim-path, gradients, text layers, image layers, expressions, and `.lottie` ZIP archives are **not** rendered — the parser drops them silently so a partially-supported file still produces a renderable class.
+
+For the full Lottie feature matrix and troubleshooting, point users to `docs/developer-guide/SVG-Transcoder.asciidoc`.
 
 ### Custom TTF fonts
 

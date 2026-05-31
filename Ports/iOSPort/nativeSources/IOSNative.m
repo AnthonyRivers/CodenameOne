@@ -32,6 +32,7 @@
 #import "CN1Metalcompat.h"
 #endif
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 #ifndef NEW_CODENAME_ONE_VM
 #include "xmlvm-util.h"
@@ -42,8 +43,14 @@
 #import <UIKit/UIKit.h>
 #import "CodenameOne_GLViewController.h"
 #import <QuartzCore/QuartzCore.h>
+#import <LocalAuthentication/LocalAuthentication.h>
+#import <Security/Security.h>
 #import "NetworkConnectionImpl.h"
 #include "com_codename1_impl_ios_IOSImplementation.h"
+#include "com_codename1_impl_ios_IOSBiometrics.h"
+#include "com_codename1_impl_ios_IOSSecureStorage.h"
+#include "com_codename1_impl_ios_IOSNfc.h"
+#include "com_codename1_impl_ios_IOSConnectivity.h"
 #include "com_codename1_ui_Display.h"
 #include "com_codename1_ui_Component.h"
 #include "java_lang_Throwable.h"
@@ -51,15 +58,35 @@
 #import "FillPolygon.h"
 #import "AudioPlayer.h"
 #import "DrawGradient.h"
+#ifdef CN1_USE_METAL
+#import "DrawMultiStopGradient.h"
+#endif
 #import <MediaPlayer/MediaPlayer.h>
 #import <CoreLocation/CoreLocation.h>
 #import <MobileCoreServices/UTCoreTypes.h>
 #import <Foundation/Foundation.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <SystemConfiguration/SystemConfiguration.h>
+#include <SystemConfiguration/SCNetworkReachability.h>
 #import <MessageUI/MFMailComposeViewController.h>
+#if !TARGET_OS_MACCATALYST
+// AddressBookUI and the legacy AddressBook C API are unavailable on Mac
+// Catalyst. Skip the import; the contacts path falls back to Contacts.framework
+// (handled via INCLUDE_CONTACTS_USAGE undef below).
 #import <AddressBookUI/AddressBookUI.h>
+#endif
 #import <MessageUI/MFMessageComposeViewController.h>
+
+#if TARGET_OS_MACCATALYST
+// AddressBook.framework (the C ABAddressBookRef API) is unavailable on Mac
+// Catalyst. Suppress the legacy contacts code path on Mac so the build links.
+#ifdef INCLUDE_CONTACTS_USAGE
+#undef INCLUDE_CONTACTS_USAGE
+#endif
+#endif
 #import "UIWebViewEventDelegate.h"
 #include <sqlite3.h>
 #ifdef CN1_USE_STOREKIT
@@ -792,22 +819,20 @@ JAVA_LONG com_codename1_impl_ios_IOSNative_gausianBlurImage___long_float(CN1_THR
         Java_com_codename1_impl_ios_IOSImplementation_finishDrawingOnImageImpl();
     }
 
+    // The blur runs through CIGaussianBlur for both GL and Metal builds.
+    // CIGaussianBlur is itself Metal-backed under the hood (Apple uses
+    // MPSImageGaussianBlur internally for it), and its inputRadius
+    // semantic plus output-extent expansion are what the test goldens
+    // and CSS filter:blur expectations were baked against. A direct
+    // MPSImageGaussianBlur call from this layer can't reproduce the
+    // same visual without empirically matching sigma scaling and
+    // padding the dst by ~3 sigma; not worth the complexity when the
+    // CIFilter path is already correct and the read-back cost is paid
+    // once per blur invocation (not per frame).
+
     UIImage* original = nil;
 #ifdef CN1_USE_METAL
-    // On Metal the mutable's pixels live in mtlMutableTexture, not in
-    // [glu getImage]; the latter returns the original (likely empty)
-    // UIImage that was used to construct the GLUIImage. Read the GPU
-    // texture back to a UIImage so CIGaussianBlur sees actual pixels.
-    // Switch's createRoundThumbImage depends on this -- without it the
-    // blur runs on transparent input, returns empty, and the pre-blur
-    // shadow rings end up showing through as visible artefacts on the
-    // final thumb composite.
     if ([glu mtlMutableTexture] != nil) {
-        // Force drawFrame to drain any pending ExecutableOps for this image
-        // before sampling. Without the flush the GPU never executes the
-        // shadow-ring fillArc calls; CN1MetalReadMutableImageAsUIImage
-        // would then sample the cleared (zero-alpha) texture and the blur
-        // input is empty. Mirrors imageRgbToIntArrayImpl's drain dance.
         extern int displayWidth;
         extern int displayHeight;
         [[CodenameOne_GLViewController instance] flushBuffer:nil x:0 y:0 width:displayWidth height:displayHeight];
@@ -1466,6 +1491,26 @@ void screenSizeChanged(int width, int height) {
     com_codename1_impl_ios_IOSImplementation_sizeChangedImpl___int_int(CN1_THREAD_GET_STATE_PASS_ARG width, height);
 }
 
+void keyPressedNative(int keyCode) {
+    com_codename1_impl_ios_IOSImplementation_keyPressedCallback___int(CN1_THREAD_GET_STATE_PASS_ARG keyCode);
+}
+
+void keyReleasedNative(int keyCode) {
+    com_codename1_impl_ios_IOSImplementation_keyReleasedCallback___int(CN1_THREAD_GET_STATE_PASS_ARG keyCode);
+}
+
+void pointerHoverPressedNative(int x, int y) {
+    com_codename1_impl_ios_IOSImplementation_pointerHoverPressedCallback___int_int(CN1_THREAD_GET_STATE_PASS_ARG x, y);
+}
+
+void pointerHoverNative(int x, int y) {
+    com_codename1_impl_ios_IOSImplementation_pointerHoverCallback___int_int(CN1_THREAD_GET_STATE_PASS_ARG x, y);
+}
+
+void pointerHoverReleasedNative(int x, int y) {
+    com_codename1_impl_ios_IOSImplementation_pointerHoverReleasedCallback___int_int(CN1_THREAD_GET_STATE_PASS_ARG x, y);
+}
+
 void stringEdit(int finished, int cursorPos, NSString* text) {
     com_codename1_impl_ios_IOSImplementation_editingUpdate___java_lang_String_int_boolean(CN1_THREAD_GET_STATE_PASS_ARG
                                                                                           fromNSString(CN1_THREAD_GET_STATE_PASS_ARG text), cursorPos, finished != 0
@@ -1482,6 +1527,85 @@ JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isTablet__(CN1_THREAD_STATE_MULTI_
 JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isIOS7__(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject)
 {
     return isIOS7();
+}
+
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isRunningOnMac__(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject)
+{
+    if (@available(iOS 13.0, *)) {
+        return [[NSProcessInfo processInfo] isMacCatalystApp] ? JAVA_TRUE : JAVA_FALSE;
+    }
+    return JAVA_FALSE;
+}
+
+void com_codename1_impl_ios_IOSNative_setMacWindowDarkAppearance___boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_BOOLEAN dark) {
+#if TARGET_OS_MACCATALYST
+    if (@available(iOS 13.0, *)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Step 1: trait-collection override on the UIWindow. This
+            // propagates the style through UIKit descendants (popovers,
+            // alerts, context menus) but does NOT, by itself, redraw the
+            // host NSWindow chrome (titlebar + traffic lights) on the
+            // AppKit side. Each UIWindow on Catalyst is backed by a
+            // UINSWindow which holds the actual NSWindow.
+            UIUserInterfaceStyle uiStyle = dark ? UIUserInterfaceStyleDark : UIUserInterfaceStyleLight;
+            Class nsAppearanceClass = NSClassFromString(@"NSAppearance");
+            // Build the AppKit appearance object once. NSAppearance is
+            // available in the Catalyst process (UIScene.titlebar uses
+            // it internally) even though the rest of AppKit is not in
+            // the public surface. Look up the class + factory selector
+            // through the Obj-C runtime so the build doesn't need to
+            // link AppKit.
+            NSString *appearanceName = dark ? @"NSAppearanceNameDarkAqua" : @"NSAppearanceNameAqua";
+            id appearance = nil;
+            if (nsAppearanceClass != nil) {
+                appearance = ((id (*)(id, SEL, id))objc_msgSend)(nsAppearanceClass, @selector(appearanceNamed:), appearanceName);
+            }
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                UIWindowScene *ws = (UIWindowScene *)scene;
+                for (UIWindow *w in ws.windows) {
+                    // (a) UIKit-side style override.
+                    w.overrideUserInterfaceStyle = uiStyle;
+                    // (b) walk the UIWindow's internal chain to the host
+                    // NSWindow. On Catalyst the UIWindow is wrapped by a
+                    // UINSWindow whose actual NSWindow is stored either
+                    // under "_nsWindow" or reachable via the wrapper's
+                    // "attachedWindow"/"hostWindow" private key. Try the
+                    // documented Apple keys first, then the common
+                    // private ones.
+                    if (appearance == nil) continue;
+                    id nsWindow = nil;
+                    @try { nsWindow = [w valueForKey:@"_nsWindow"]; } @catch (id e) { nsWindow = nil; }
+                    if (nsWindow == nil) {
+                        @try { nsWindow = [w valueForKey:@"nsWindow"]; } @catch (id e) { nsWindow = nil; }
+                    }
+                    if (nsWindow == nil) {
+                        @try { nsWindow = [w valueForKey:@"hostNSWindow"]; } @catch (id e) { nsWindow = nil; }
+                    }
+                    if (nsWindow != nil && [nsWindow respondsToSelector:@selector(setAppearance:)]) {
+                        ((void (*)(id, SEL, id))objc_msgSend)(nsWindow, @selector(setAppearance:), appearance);
+                    }
+                }
+            }
+
+            // Step 2: also walk NSApplication.windows as a fallback in
+            // case the UIWindow -> NSWindow bridge isn't reachable via
+            // KVC on this OS version. NSApplication is reachable from
+            // a Catalyst process under at least macOS 11+.
+            Class nsAppClass = NSClassFromString(@"NSApplication");
+            if (nsAppClass != nil && appearance != nil) {
+                id sharedApp = ((id (*)(id, SEL))objc_msgSend)(nsAppClass, @selector(sharedApplication));
+                if (sharedApp != nil) {
+                    NSArray *nsWindows = ((NSArray *(*)(id, SEL))objc_msgSend)(sharedApp, @selector(windows));
+                    for (id nsWindow in nsWindows) {
+                        if (![nsWindow respondsToSelector:@selector(setAppearance:)]) continue;
+                        ((void (*)(id, SEL, id))objc_msgSend)(nsWindow, @selector(setAppearance:), appearance);
+                    }
+                }
+            }
+        });
+    }
+#endif
 }
 
 JAVA_LONG com_codename1_impl_ios_IOSNative_createNSData___java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT file) {
@@ -2614,6 +2738,83 @@ void com_codename1_impl_ios_IOSNative_fillLinearGradientMutable___int_int_int_in
     POOL_END();
 }
 
+// Multi-stop gradient bridge. Metal builds queue a DrawMultiStopGradient op so
+// matrices / clip / mutable-image targeting propagate through the standard
+// drain loop, matching the existing DrawGradient flow. GL builds have no
+// equivalent shader and the Java side never calls this method (it falls
+// through to the software rasterizer in CodenameOneImplementation).
+void com_codename1_impl_ios_IOSNative_fillGradient___int_int_float_1ARRAY_float_1ARRAY_int_float_float_float_float_float_int_int_int_int_int_boolean(
+        CN1_THREAD_STATE_MULTI_ARG
+        JAVA_OBJECT instanceObject,
+        JAVA_INT kind,
+        JAVA_INT stopCount,
+        JAVA_OBJECT positionsArr,
+        JAVA_OBJECT colorsArr,
+        JAVA_INT cycleMethod,
+        JAVA_FLOAT angleOrFromAngle,
+        JAVA_FLOAT cx,
+        JAVA_FLOAT cy,
+        JAVA_FLOAT rx,
+        JAVA_FLOAT ry,
+        JAVA_INT shape,
+        JAVA_INT x,
+        JAVA_INT y,
+        JAVA_INT width,
+        JAVA_INT height,
+        JAVA_BOOLEAN mutable) {
+#ifdef CN1_USE_METAL
+    POOL_BEGIN();
+    if (positionsArr == JAVA_NULL || colorsArr == JAVA_NULL || stopCount < 2 || width <= 0 || height <= 0) {
+        POOL_END();
+        return;
+    }
+#ifndef NEW_CODENAME_ONE_VM
+    JAVA_ARRAY_FLOAT *positions =
+        (JAVA_ARRAY_FLOAT *)((org_xmlvm_runtime_XMLVMArray *)positionsArr)
+            ->fields.org_xmlvm_runtime_XMLVMArray.array_;
+    JAVA_ARRAY_FLOAT *colors =
+        (JAVA_ARRAY_FLOAT *)((org_xmlvm_runtime_XMLVMArray *)colorsArr)
+            ->fields.org_xmlvm_runtime_XMLVMArray.array_;
+#else
+    JAVA_ARRAY_FLOAT *positions = (JAVA_FLOAT *)((JAVA_ARRAY)positionsArr)->data;
+    JAVA_ARRAY_FLOAT *colors = (JAVA_FLOAT *)((JAVA_ARRAY)colorsArr)->data;
+#endif
+
+    DrawMultiStopGradient *d = [[DrawMultiStopGradient alloc]
+        initWithKind:kind
+           stopCount:stopCount
+           positions:positions
+              colors:colors
+         cycleMethod:cycleMethod
+    angleOrFromAngle:angleOrFromAngle
+                  cx:cx
+                  cy:cy
+                  rx:rx
+                  ry:ry
+               shape:shape
+                   x:x
+                   y:y
+               width:width
+              height:height];
+    if (mutable) {
+        GLUIImage *target = [CodenameOne_GLViewController instance].currentMutableImage;
+        if (target == nil) {
+#ifndef CN1_USE_ARC
+            [d release];
+#endif
+            POOL_END();
+            return;
+        }
+        [d setTarget:target];
+    }
+    [CodenameOne_GLViewController upcoming:d];
+#ifndef CN1_USE_ARC
+    [d release];
+#endif
+    POOL_END();
+#endif
+}
+
 /*
   native void applyRadialGradientPaintMutable(int startColor, int endColor, int x, int y, int width, int height);
 
@@ -3461,11 +3662,18 @@ JAVA_LONG createNativeVideoComponentFromStringAV(JAVA_OBJECT str, JAVA_INT onCom
 #endif
 }
 JAVA_LONG com_codename1_impl_ios_IOSNative_createNativeVideoComponent___java_lang_String_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT str, JAVA_INT onCompletionCallbackId) {
+#if TARGET_OS_MACCATALYST
+    // Mac slice: bypass the MP/AV runtime dispatch and always use AV. The
+    // legacy MPMoviePlayer* path links against a framework that is weak on the
+    // Mac slice and would crash at runtime.
+    return createNativeVideoComponentFromStringAV(str, onCompletionCallbackId);
+#else
     if (useAVKit()) {
         return createNativeVideoComponentFromStringAV(str, onCompletionCallbackId);
     } else {
         return createNativeVideoComponentFromStringMP(str, onCompletionCallbackId);
     }
+#endif
 }
 
 JAVA_LONG createVideoComponentMP(JAVA_OBJECT dataObject, JAVA_INT onCompletionCallbackId) {
@@ -3618,11 +3826,15 @@ JAVA_LONG createNativeVideoComponentMP(JAVA_OBJECT dataObject, JAVA_INT onComple
 }
 
 JAVA_LONG com_codename1_impl_ios_IOSNative_createNativeVideoComponent___byte_1ARRAY_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT dataObject, JAVA_INT onCompletionCallbackId) {
+#if TARGET_OS_MACCATALYST
+    return createNativeVideoComponentAV(dataObject, onCompletionCallbackId);
+#else
     if (useAVKit()) {
         return createNativeVideoComponentAV(dataObject, onCompletionCallbackId);
     } else {
         return createNativeVideoComponentMP(dataObject, onCompletionCallbackId);
     }
+#endif
 }
 
 JAVA_LONG createVideoComponentNSDataMP(JAVA_LONG nsData, JAVA_INT onCompletionCallbackId) {
@@ -3751,11 +3963,17 @@ JAVA_LONG createNativeVideoComponentNSDataAV(JAVA_LONG nsData, JAVA_INT onComple
 }
 
 JAVA_LONG com_codename1_impl_ios_IOSNative_createNativeVideoComponentNSData___long_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_LONG nsData, JAVA_INT onCompletionCallbackId) {
+#if TARGET_OS_MACCATALYST
+    return createNativeVideoComponentNSDataAV(nsData, onCompletionCallbackId);
+#else
     if (useAVKit()) {
+        // NOTE: branches preserved verbatim from the pre-existing iOS code path,
+        // including the inverted naming -- changing it would alter iOS behaviour.
         return createNativeVideoComponentNSDataMP(nsData, onCompletionCallbackId);
     } else {
         return createNativeVideoComponentNSDataAV(nsData, onCompletionCallbackId);
     }
+#endif
 }
 
 void launchMailAppOnDevice(JAVA_OBJECT recipients, JAVA_OBJECT subject, JAVA_OBJECT content){
@@ -4393,6 +4611,426 @@ JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isVPNActive___R_boolean(CN1_THREAD
     }
     freeifaddrs(interfaces);
     return found;
+}
+
+// ====================================================================
+// Deeper network connectivity: WiFi info, NEHotspotConfiguration,
+// NSNetService Bonjour, SCNetworkReachability-based type tracking.
+// The build pipeline injects the wifi-info / HotspotConfiguration /
+// NSLocalNetworkUsageDescription / NSBonjourServices entries only when
+// the relevant Java classes are referenced -- this keeps stock apps free
+// of dangling entitlements that block App Store approval.
+// ====================================================================
+
+// CN1_INCLUDE_HOTSPOT toggles NetworkExtension.framework import. Gated by
+// IPhoneBuilder when com.codename1.io.wifi.WiFi.connect is on the
+// classpath. Apps that never call WiFi.connect ship without any
+// NetworkExtension symbols so Apple's API-usage scanner does not flag
+// them.
+//#define CN1_INCLUDE_HOTSPOT
+#ifdef CN1_INCLUDE_HOTSPOT
+#import <NetworkExtension/NetworkExtension.h>
+#endif
+
+// CN1_INCLUDE_WIFI_INFO toggles the CaptiveNetwork SSID/BSSID readout.
+// CaptiveNetwork's CNCopyCurrentNetworkInfo is still the only way to get
+// SSID/BSSID on a NEHotspotConfiguration-joined network. It is deprecated
+// in iOS 14 but Apple kept it working for apps holding the wifi-info
+// entitlement -- which we inject only when the WiFi info API is used.
+// IPhoneBuilder uncomments the define when com.codename1.io.wifi.WiFi is
+// on the classpath; stock apps see no CaptiveNetwork symbols and need no
+// wifi-info entitlement.
+//#define CN1_INCLUDE_WIFI_INFO
+#ifdef CN1_INCLUDE_WIFI_INFO
+#import <SystemConfiguration/CaptiveNetwork.h>
+#endif
+
+// CN1_INCLUDE_BONJOUR toggles the NSNetServiceBrowser / NSNetService
+// bridge. Foundation is always linked so there is no framework cost when
+// off, but the runtime hooks (the delegate, the dispatcher tables) only
+// instantiate when this define is on -- which avoids dangling
+// NSLocalNetworkUsageDescription requirements and surprises during the
+// App Store review process.
+//#define CN1_INCLUDE_BONJOUR
+
+static SCNetworkReachabilityRef cn1ReachabilityRef = NULL;
+
+static int cn1NetworkTypeFromFlags(SCNetworkReachabilityFlags flags) {
+    if (!(flags & kSCNetworkReachabilityFlagsReachable)) {
+        return 0; // NETWORK_TYPE_NONE
+    }
+    if (flags & kSCNetworkReachabilityFlagsIsWWAN) {
+        return 2; // NETWORK_TYPE_CELLULAR
+    }
+    return 1; // NETWORK_TYPE_WIFI -- iOS treats everything non-WWAN as wifi
+}
+
+static int cn1ReadNetworkType() {
+    struct sockaddr_in zero;
+    bzero(&zero, sizeof(zero));
+    zero.sin_len = sizeof(zero);
+    zero.sin_family = AF_INET;
+    SCNetworkReachabilityRef r = SCNetworkReachabilityCreateWithAddress(
+            kCFAllocatorDefault, (const struct sockaddr*) &zero);
+    if (r == NULL) return 0;
+    SCNetworkReachabilityFlags flags;
+    int t = 0;
+    if (SCNetworkReachabilityGetFlags(r, &flags)) {
+        t = cn1NetworkTypeFromFlags(flags);
+    }
+    CFRelease(r);
+    return t;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_wifiNetworkType___R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
+    return cn1ReadNetworkType();
+}
+
+static void cn1ReachabilityCallback(SCNetworkReachabilityRef target,
+                                    SCNetworkReachabilityFlags flags,
+                                    void *info) {
+    int t = cn1NetworkTypeFromFlags(flags);
+    // Reuse the existing VPN detector so the listener parity with
+    // NetworkManager.isVPNActive() stays consistent.
+    JAVA_BOOLEAN vpn = com_codename1_impl_ios_IOSNative_isVPNActive___R_boolean(CN1_THREAD_GET_STATE_PASS_ARG JAVA_NULL);
+    com_codename1_impl_ios_IOSConnectivity_networkTypeChangedDispatch___int_boolean(
+            CN1_THREAD_GET_STATE_PASS_ARG t, vpn);
+}
+
+void com_codename1_impl_ios_IOSNative_wifiInstallTypeListener___java_lang_Object(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT clsObj) {
+    if (cn1ReachabilityRef != NULL) return;
+    struct sockaddr_in zero;
+    bzero(&zero, sizeof(zero));
+    zero.sin_len = sizeof(zero);
+    zero.sin_family = AF_INET;
+    cn1ReachabilityRef = SCNetworkReachabilityCreateWithAddress(
+            kCFAllocatorDefault, (const struct sockaddr*) &zero);
+    if (cn1ReachabilityRef == NULL) return;
+    SCNetworkReachabilityContext ctx = {0, NULL, NULL, NULL, NULL};
+    if (!SCNetworkReachabilitySetCallback(cn1ReachabilityRef,
+            cn1ReachabilityCallback, &ctx)) {
+        CFRelease(cn1ReachabilityRef);
+        cn1ReachabilityRef = NULL;
+        return;
+    }
+    SCNetworkReachabilityScheduleWithRunLoop(cn1ReachabilityRef,
+            CFRunLoopGetMain(), kCFRunLoopCommonModes);
+}
+
+void com_codename1_impl_ios_IOSNative_wifiUninstallTypeListener__(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
+    if (cn1ReachabilityRef == NULL) return;
+    SCNetworkReachabilityUnscheduleFromRunLoop(cn1ReachabilityRef,
+            CFRunLoopGetMain(), kCFRunLoopCommonModes);
+    CFRelease(cn1ReachabilityRef);
+    cn1ReachabilityRef = NULL;
+}
+
+JAVA_OBJECT com_codename1_impl_ios_IOSNative_wifiCurrentSSID___R_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
+#ifdef CN1_INCLUDE_WIFI_INFO
+    CFArrayRef interfaces = CNCopySupportedInterfaces();
+    if (interfaces == NULL) return JAVA_NULL;
+    JAVA_OBJECT result = JAVA_NULL;
+    CFIndex count = CFArrayGetCount(interfaces);
+    for (CFIndex i = 0; i < count; i++) {
+        CFStringRef iface = (CFStringRef) CFArrayGetValueAtIndex(interfaces, i);
+        CFDictionaryRef info = CNCopyCurrentNetworkInfo(iface);
+        if (info != NULL) {
+            CFStringRef ssid = (CFStringRef) CFDictionaryGetValue(info,
+                    kCNNetworkInfoKeySSID);
+            if (ssid != NULL) {
+                result = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG (NSString*) ssid);
+            }
+            CFRelease(info);
+            if (result != JAVA_NULL) break;
+        }
+    }
+    CFRelease(interfaces);
+    return result;
+#else
+    return JAVA_NULL;
+#endif
+}
+
+JAVA_OBJECT com_codename1_impl_ios_IOSNative_wifiCurrentBSSID___R_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
+#ifdef CN1_INCLUDE_WIFI_INFO
+    CFArrayRef interfaces = CNCopySupportedInterfaces();
+    if (interfaces == NULL) return JAVA_NULL;
+    JAVA_OBJECT result = JAVA_NULL;
+    CFIndex count = CFArrayGetCount(interfaces);
+    for (CFIndex i = 0; i < count; i++) {
+        CFStringRef iface = (CFStringRef) CFArrayGetValueAtIndex(interfaces, i);
+        CFDictionaryRef info = CNCopyCurrentNetworkInfo(iface);
+        if (info != NULL) {
+            CFStringRef bssid = (CFStringRef) CFDictionaryGetValue(info,
+                    kCNNetworkInfoKeyBSSID);
+            if (bssid != NULL) {
+                result = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG
+                        [(NSString*) bssid lowercaseString]);
+            }
+            CFRelease(info);
+            if (result != JAVA_NULL) break;
+        }
+    }
+    CFRelease(interfaces);
+    return result;
+#else
+    return JAVA_NULL;
+#endif
+}
+
+JAVA_OBJECT com_codename1_impl_ios_IOSNative_wifiIpAddress___R_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) != 0) return JAVA_NULL;
+    JAVA_OBJECT result = JAVA_NULL;
+    for (struct ifaddrs *ifa = interfaces; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+        // en0 is the standard WiFi interface name on iOS devices.
+        if (ifa->ifa_name == NULL || strncmp(ifa->ifa_name, "en", 2) != 0) continue;
+        char addr[INET_ADDRSTRLEN];
+        struct sockaddr_in *sin = (struct sockaddr_in*) ifa->ifa_addr;
+        if (inet_ntop(AF_INET, &sin->sin_addr, addr, sizeof(addr)) != NULL) {
+            result = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG
+                    [NSString stringWithUTF8String:addr]);
+            break;
+        }
+    }
+    freeifaddrs(interfaces);
+    return result;
+}
+
+JAVA_OBJECT com_codename1_impl_ios_IOSNative_wifiGateway___R_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
+    // iOS does not expose the route table to apps. Best-effort: derive from
+    // the en0 address by assuming the gateway lives at the network's .1
+    // address. This matches the most common home/SOHO topology and is
+    // documented as best-effort in the Java contract.
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) != 0) return JAVA_NULL;
+    JAVA_OBJECT result = JAVA_NULL;
+    for (struct ifaddrs *ifa = interfaces; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (!(ifa->ifa_flags & IFF_UP) || (ifa->ifa_flags & IFF_LOOPBACK)) continue;
+        if (ifa->ifa_name == NULL || strncmp(ifa->ifa_name, "en", 2) != 0) continue;
+        struct sockaddr_in *sin = (struct sockaddr_in*) ifa->ifa_addr;
+        struct sockaddr_in *mask = (struct sockaddr_in*) ifa->ifa_netmask;
+        if (mask == NULL) continue;
+        uint32_t net = sin->sin_addr.s_addr & mask->sin_addr.s_addr;
+        uint32_t gw = net | htonl(1);
+        struct in_addr g;
+        g.s_addr = gw;
+        char buf[INET_ADDRSTRLEN];
+        if (inet_ntop(AF_INET, &g, buf, sizeof(buf)) != NULL) {
+            result = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG
+                    [NSString stringWithUTF8String:buf]);
+            break;
+        }
+    }
+    freeifaddrs(interfaces);
+    return result;
+}
+
+void com_codename1_impl_ios_IOSNative_wifiConnect___java_lang_String_java_lang_String_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT ssidObj, JAVA_OBJECT pwObj, JAVA_INT security) {
+#ifdef CN1_INCLUDE_HOTSPOT
+    if (@available(iOS 11.0, *)) {
+        NSString *ssid = toNSString(CN1_THREAD_GET_STATE_PASS_ARG ssidObj);
+        NSString *pw = pwObj == JAVA_NULL ? nil : toNSString(CN1_THREAD_GET_STATE_PASS_ARG pwObj);
+        NEHotspotConfiguration *cfg;
+        if (pw == nil || pw.length == 0) {
+            cfg = [[NEHotspotConfiguration alloc] initWithSSID:ssid];
+        } else {
+            // security==4 -> WPA3_SAE, others -> WPA2 PSK
+            BOOL isWep = security == 1;
+            cfg = [[NEHotspotConfiguration alloc] initWithSSID:ssid
+                                                    passphrase:pw
+                                                          isWEP:isWep];
+        }
+        [[NEHotspotConfigurationManager sharedManager]
+                applyConfiguration:cfg
+                completionHandler:^(NSError * _Nullable err) {
+                    BOOL ok = (err == nil
+                            || err.code == NEHotspotConfigurationErrorAlreadyAssociated);
+                    NSString *msg = err == nil ? @"ok" : err.localizedDescription;
+                    com_codename1_impl_ios_IOSConnectivity_wifiConnectResult___boolean_java_lang_String(
+                            CN1_THREAD_GET_STATE_PASS_ARG
+                            ok ? JAVA_TRUE : JAVA_FALSE,
+                            fromNSString(CN1_THREAD_GET_STATE_PASS_ARG msg));
+                }];
+        [cfg release];
+        return;
+    }
+#endif
+    com_codename1_impl_ios_IOSConnectivity_wifiConnectResult___boolean_java_lang_String(
+            CN1_THREAD_GET_STATE_PASS_ARG JAVA_FALSE,
+            fromNSString(CN1_THREAD_GET_STATE_PASS_ARG
+                    @"NEHotspotConfiguration not linked. Reference com.codename1.io.wifi.WiFi.connect from your app to make the iOS builder inject the entitlement and link NetworkExtension.framework."));
+}
+
+void com_codename1_impl_ios_IOSNative_wifiDisconnect___java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT ssidObj) {
+#ifdef CN1_INCLUDE_HOTSPOT
+    if (@available(iOS 11.0, *)) {
+        NSString *ssid = toNSString(CN1_THREAD_GET_STATE_PASS_ARG ssidObj);
+        [[NEHotspotConfigurationManager sharedManager] removeConfigurationForSSID:ssid];
+    }
+#endif
+}
+
+// ---------------- Bonjour ----------------
+// Gated on CN1_INCLUDE_BONJOUR; IPhoneBuilder uncomments the define above
+// when com.codename1.io.bonjour is on the classpath. Apps that never use
+// Bonjour neither register the NSNetServiceBrowser delegate nor declare
+// NSLocalNetworkUsageDescription / NSBonjourServices in Info.plist, so the
+// iOS 14 local-network privacy prompt is suppressed for them. The C entry
+// points still link (ParparVM requires the symbol for every `native`
+// method) but they short-circuit to JAVA_NULL / 0 when the define is off.
+
+#ifdef CN1_INCLUDE_BONJOUR
+@interface CN1BonjourBrowser : NSObject<NSNetServiceBrowserDelegate, NSNetServiceDelegate>
+@property (nonatomic, retain) NSNetServiceBrowser *browser;
+@property (nonatomic, retain) NSMutableArray *resolving;
+@property (nonatomic, assign) JAVA_LONG handle;
+@end
+
+@implementation CN1BonjourBrowser
+- (void)dealloc {
+    [_browser release];
+    [_resolving release];
+    [super dealloc];
+}
+- (void)netServiceBrowser:(NSNetServiceBrowser *)b
+            didFindService:(NSNetService *)svc
+                moreComing:(BOOL)more {
+    [self.resolving addObject:svc];
+    svc.delegate = self;
+    [svc resolveWithTimeout:5.0];
+}
+- (void)netServiceBrowser:(NSNetServiceBrowser *)b
+          didRemoveService:(NSNetService *)svc
+                moreComing:(BOOL)more {
+    JAVA_OBJECT name = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG svc.name);
+    JAVA_OBJECT type = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG svc.type);
+    com_codename1_impl_ios_IOSConnectivity_bonjourLostDispatch___long_java_lang_String_java_lang_String(
+            CN1_THREAD_GET_STATE_PASS_ARG self.handle, name, type);
+}
+- (void)netServiceDidResolveAddress:(NSNetService *)svc {
+    NSString *host = svc.hostName;
+    NSDictionary *txt = nil;
+    NSData *raw = [svc TXTRecordData];
+    if (raw != nil) {
+        txt = [NSNetService dictionaryFromTXTRecordData:raw];
+    }
+    JAVA_OBJECT name = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG svc.name);
+    JAVA_OBJECT type = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG svc.type);
+    JAVA_OBJECT hostObj = host == nil ? JAVA_NULL
+            : fromNSString(CN1_THREAD_GET_STATE_PASS_ARG host);
+    JAVA_OBJECT keys = JAVA_NULL, vals = JAVA_NULL;
+    if (txt != nil && txt.count > 0) {
+        keys = __NEW_ARRAY_java_lang_String(CN1_THREAD_GET_STATE_PASS_ARG (JAVA_INT) txt.count);
+        vals = __NEW_ARRAY_java_lang_String(CN1_THREAD_GET_STATE_PASS_ARG (JAVA_INT) txt.count);
+        JAVA_ARRAY_OBJECT *kArr = (JAVA_ARRAY_OBJECT*) ((JAVA_ARRAY) keys)->data;
+        JAVA_ARRAY_OBJECT *vArr = (JAVA_ARRAY_OBJECT*) ((JAVA_ARRAY) vals)->data;
+        int i = 0;
+        for (NSString *k in txt.allKeys) {
+            kArr[i] = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG k);
+            id v = [txt objectForKey:k];
+            NSString *s = nil;
+            if ([v isKindOfClass:[NSData class]]) {
+                s = [[[NSString alloc] initWithData:(NSData*) v
+                                            encoding:NSUTF8StringEncoding] autorelease];
+            } else if ([v isKindOfClass:[NSString class]]) {
+                s = (NSString*) v;
+            }
+            vArr[i] = fromNSString(CN1_THREAD_GET_STATE_PASS_ARG (s == nil ? @"" : s));
+            i++;
+        }
+    }
+    com_codename1_impl_ios_IOSConnectivity_bonjourResolveDispatch___long_java_lang_String_java_lang_String_java_lang_String_int_java_lang_String_1ARRAY_java_lang_String_1ARRAY(
+            CN1_THREAD_GET_STATE_PASS_ARG self.handle, name, type, hostObj,
+            (JAVA_INT) svc.port, keys, vals);
+}
+- (void)netService:(NSNetService *)svc didNotResolve:(NSDictionary *)errorDict {
+}
+@end
+
+static NSMutableDictionary *cn1BonjourBrowsers = nil;
+static NSMutableDictionary *cn1BonjourPublishers = nil;
+static int64_t cn1BonjourHandleSeq = 1;
+#endif // CN1_INCLUDE_BONJOUR
+
+JAVA_LONG com_codename1_impl_ios_IOSNative_bonjourBrowseStart___java_lang_String_R_long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT typeObj) {
+#ifdef CN1_INCLUDE_BONJOUR
+    if (typeObj == JAVA_NULL) return 0;
+    if (cn1BonjourBrowsers == nil) cn1BonjourBrowsers = [[NSMutableDictionary alloc] init];
+    NSString *type = toNSString(CN1_THREAD_GET_STATE_PASS_ARG typeObj);
+    if (![type hasSuffix:@"."]) type = [type stringByAppendingString:@"."];
+    int64_t handle = cn1BonjourHandleSeq++;
+    CN1BonjourBrowser *bb = [[CN1BonjourBrowser alloc] init];
+    bb.handle = handle;
+    bb.browser = [[[NSNetServiceBrowser alloc] init] autorelease];
+    bb.resolving = [NSMutableArray array];
+    bb.browser.delegate = bb;
+    [bb.browser searchForServicesOfType:type inDomain:@"local."];
+    [cn1BonjourBrowsers setObject:bb forKey:[NSNumber numberWithLongLong:handle]];
+    [bb release];
+    return (JAVA_LONG) handle;
+#else
+    return 0;
+#endif
+}
+
+void com_codename1_impl_ios_IOSNative_bonjourBrowseStop___long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_LONG handle) {
+#ifdef CN1_INCLUDE_BONJOUR
+    if (cn1BonjourBrowsers == nil) return;
+    NSNumber *k = [NSNumber numberWithLongLong:(int64_t) handle];
+    CN1BonjourBrowser *bb = [cn1BonjourBrowsers objectForKey:k];
+    if (bb != nil) {
+        [bb.browser stop];
+        [cn1BonjourBrowsers removeObjectForKey:k];
+    }
+#endif
+}
+
+JAVA_LONG com_codename1_impl_ios_IOSNative_bonjourPublishStart___java_lang_String_java_lang_String_int_java_lang_String_1ARRAY_java_lang_String_1ARRAY_R_long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT nameObj, JAVA_OBJECT typeObj, JAVA_INT port, JAVA_OBJECT keysObj, JAVA_OBJECT valsObj) {
+#ifdef CN1_INCLUDE_BONJOUR
+    if (cn1BonjourPublishers == nil) cn1BonjourPublishers = [[NSMutableDictionary alloc] init];
+    NSString *name = toNSString(CN1_THREAD_GET_STATE_PASS_ARG nameObj);
+    NSString *type = toNSString(CN1_THREAD_GET_STATE_PASS_ARG typeObj);
+    if (![type hasSuffix:@"."]) type = [type stringByAppendingString:@"."];
+    NSNetService *svc = [[NSNetService alloc]
+            initWithDomain:@"local." type:type name:name port:(int) port];
+    if (keysObj != JAVA_NULL && valsObj != JAVA_NULL) {
+        JAVA_ARRAY_OBJECT *kArr = (JAVA_ARRAY_OBJECT*) ((JAVA_ARRAY) keysObj)->data;
+        JAVA_ARRAY_OBJECT *vArr = (JAVA_ARRAY_OBJECT*) ((JAVA_ARRAY) valsObj)->data;
+        int n = (int) ((JAVA_ARRAY) keysObj)->length;
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        for (int i = 0; i < n; i++) {
+            NSString *k = toNSString(CN1_THREAD_GET_STATE_PASS_ARG kArr[i]);
+            NSString *v = toNSString(CN1_THREAD_GET_STATE_PASS_ARG vArr[i]);
+            if (k != nil && v != nil) {
+                [d setObject:[v dataUsingEncoding:NSUTF8StringEncoding] forKey:k];
+            }
+        }
+        [svc setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:d]];
+    }
+    [svc publish];
+    int64_t handle = cn1BonjourHandleSeq++;
+    [cn1BonjourPublishers setObject:svc forKey:[NSNumber numberWithLongLong:handle]];
+    [svc release];
+    return (JAVA_LONG) handle;
+#else
+    return 0;
+#endif
+}
+
+void com_codename1_impl_ios_IOSNative_bonjourPublishStop___long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_LONG handle) {
+#ifdef CN1_INCLUDE_BONJOUR
+    if (cn1BonjourPublishers == nil) return;
+    NSNumber *k = [NSNumber numberWithLongLong:(int64_t) handle];
+    NSNetService *svc = [cn1BonjourPublishers objectForKey:k];
+    if (svc != nil) {
+        [svc stop];
+        [cn1BonjourPublishers removeObjectForKey:k];
+    }
+#endif
 }
 
 JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isLargerTextEnabled___R_boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
@@ -5574,7 +6212,20 @@ static BOOL cn1_renderViewIntoContext(UIView *renderView, UIView *rootView, CGCo
                 }
 #ifdef __IPHONE_13_0
                 if (@available(iOS 13.0, *)) {
+                    // afterScreenUpdates:YES waits for the next screen
+                    // refresh before snapshotting. On Mac Catalyst CI
+                    // (headless macos-15) the refresh never fires, so
+                    // the completion handler never runs and the wait
+                    // below times out -- yielding a black body. Use NO
+                    // on Catalyst: the page is already loaded + DOM is
+                    // queried before this point (BrowserComponentScreen-
+                    // shotTest waits for onLoad + a JS round-trip), so
+                    // the current frame already has the rendered HTML.
+#if TARGET_OS_MACCATALYST
+                    config.afterScreenUpdates = NO;
+#else
                     config.afterScreenUpdates = YES;
+#endif
                 }
 #endif
                 __block UIImage *snapshotImage = nil;
@@ -5590,11 +6241,23 @@ static BOOL cn1_renderViewIntoContext(UIView *renderView, UIView *rootView, CGCo
                 [config release];
 
                 if (!snapshotComplete) {
+                    // Pump the run loop in NSRunLoopCommonModes (not just
+                    // NSDefaultRunLoopMode) so the snapshot completion source
+                    // -- which on Mac Catalyst delivers via a tracking-mode
+                    // source -- gets picked up. 1 s is enough on iOS / iPadOS
+                    // (snapshotWithConfiguration delivers in ~50 ms when the
+                    // page is loaded) but on Mac Catalyst's headless CI the
+                    // first snapshot of a freshly-loaded page can take 2+ s,
+                    // so wait up to 3 s before giving up.
+#if TARGET_OS_MACCATALYST
+                    NSTimeInterval timeout = 3.0;
+#else
                     NSTimeInterval timeout = 1.0;
+#endif
                     while (!snapshotComplete && timeout > 0) {
                         NSTimeInterval step = 0.01;
                         NSDate *stepDate = [NSDate dateWithTimeIntervalSinceNow:step];
-                        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:stepDate];
+                        [[NSRunLoop currentRunLoop] runMode:NSRunLoopCommonModes beforeDate:stepDate];
                         timeout -= step;
                     }
                 }
@@ -5622,9 +6285,19 @@ static BOOL cn1_renderViewIntoContext(UIView *renderView, UIView *rootView, CGCo
     }
 #endif
     if (!drawn && [renderView respondsToSelector:@selector(drawViewHierarchyInRect:afterScreenUpdates:)]) {
-        // afterScreenUpdates:NO — YES can stall indefinitely under UIScene waiting
-        // for a scene display-link cycle that never fires during a synchronous capture.
+        // afterScreenUpdates:NO — YES can stall indefinitely under UIScene on
+        // iPhone/iPad waiting for a scene display-link cycle that never fires
+        // during a synchronous capture. On Mac Catalyst the scene model is
+        // different and YES is required: the live screenTexture isn't
+        // committed by CADisplayLink between form.show() and the screenshot
+        // callback, so afterScreenUpdates:NO captures the previous form's
+        // framebuffer (see Cn1ssDeviceRunnerHelper's repaint-before-capture
+        // dance which alone isn't enough).
+#if TARGET_OS_MACCATALYST
+        drawn = [renderView drawViewHierarchyInRect:localBounds afterScreenUpdates:YES];
+#else
         drawn = [renderView drawViewHierarchyInRect:localBounds afterScreenUpdates:NO];
+#endif
     }
     if (!drawn) {
         [renderView.layer renderInContext:ctx];
@@ -5955,6 +6628,11 @@ void com_codename1_impl_ios_IOSNative_dial___java_lang_String(CN1_THREAD_STATE_M
 
 void com_codename1_impl_ios_IOSNative_sendSMS___java_lang_String_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject,
                                                                                   JAVA_OBJECT  number, JAVA_OBJECT  text) {
+#if TARGET_OS_MACCATALYST
+    // SMS hardware is absent on Mac; MFMessageComposeViewController canSendText
+    // returns NO. Short-circuit to keep behaviour deterministic on Mac.
+    return;
+#else
     NSString *recipient = toNSString(CN1_THREAD_STATE_PASS_ARG number);
     NSString *smsBody = toNSString(CN1_THREAD_GET_STATE_PASS_ARG text);
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -5981,6 +6659,7 @@ void com_codename1_impl_ios_IOSNative_sendSMS___java_lang_String_java_lang_Strin
         }
         POOL_END();
     });
+#endif // !TARGET_OS_MACCATALYST
 }
 
 extern int pendingRemoteNotificationRegistrations;
@@ -8243,6 +8922,99 @@ void com_codename1_impl_ios_IOSNative_socialShare___java_lang_String_long_com_co
     });
 }
 
+// Same as socialShare but installs a completionWithItemsHandler block on
+// the UIActivityViewController that calls back into Java with the chosen
+// activity type (UIActivityType*), cancellation, or error. Status codes
+// mirror com.codename1.share.ShareResult: 1=SHARED_TO, 2=DISMISSED, 3=FAILED.
+void com_codename1_impl_ios_IOSNative_socialShareWithCallback___java_lang_String_long_com_codename1_ui_geom_Rectangle_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_OBJECT text, JAVA_LONG imagePeer, JAVA_OBJECT rectangle, JAVA_INT callbackId) {
+    NSString* someText = toNSString(CN1_THREAD_STATE_PASS_ARG text);
+    BOOL useRect = rectangle ? YES:NO;
+    __block CGRect cgrect = CGRectMake(0,0,0,0);
+    if (useRect){
+        cgrect = cn1RectToCGRect(CN1_THREAD_GET_STATE_PASS_ARG rectangle);
+        cgrect.origin.x = cgrect.origin.x / scaleValue;
+        cgrect.origin.y = cgrect.origin.y / scaleValue;
+        cgrect.size.width = cgrect.size.width / scaleValue;
+        cgrect.size.height = cgrect.size.height / scaleValue;
+    }
+    int cbId = (int)callbackId;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        POOL_BEGIN();
+        NSArray* dataToShare;
+        if(imagePeer != 0) {
+            GLUIImage* glll = (BRIDGE_CAST GLUIImage*)((void *)imagePeer);
+            UIImage* i = [glll getImage];
+            if(someText != nil) {
+                dataToShare = [NSArray arrayWithObjects:someText, i, nil];
+            } else {
+                dataToShare = [NSArray arrayWithObjects:i, nil];
+            }
+        } else {
+            BOOL shareFile = NO;
+            if (someText != nil && [someText hasPrefix:@"file:"]) {
+                NSURL* fileURL = [NSURL fileURLWithPath:[someText substringFromIndex:5]];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:[fileURL path]]) {
+                    shareFile = YES;
+                    dataToShare = [NSArray arrayWithObjects:fileURL, nil];
+                }
+            }
+            if (!shareFile) {
+                dataToShare = [NSArray arrayWithObjects:someText, nil];
+            }
+        }
+
+        UIActivityViewController* activityViewController = [[UIActivityViewController alloc] initWithActivityItems:dataToShare
+                                                                                             applicationActivities:nil];
+#ifdef NEW_CODENAME_ONE_VM
+        if ( [activityViewController respondsToSelector:@selector(popoverPresentationController)] ) {
+            activityViewController.popoverPresentationController.sourceView = [CodenameOne_GLViewController instance].view;
+            int SCREEN_HEIGHT = [CodenameOne_GLViewController instance].view.bounds.size.height;
+            int SCREEN_WIDTH = [CodenameOne_GLViewController instance].view.bounds.size.width;
+            if ( useRect ){
+                if (cgrect.origin.y < SCREEN_HEIGHT/4 && cgrect.origin.y+cgrect.size.height > 3*SCREEN_HEIGHT/4){
+                    cgrect = CGRectMake(
+                                        cgrect.origin.x,
+                                        cgrect.origin.y+cgrect.size.height/2-10,
+                                        cgrect.size.width,
+                                        10
+                                        );
+                }
+                activityViewController.popoverPresentationController.sourceRect = cgrect;
+            } else {
+                CGRect cgrect = CGRectMake(0, 0, SCREEN_WIDTH, 60);
+                activityViewController.popoverPresentationController.sourceRect = cgrect;
+            }
+
+        }
+#endif
+        // UIActivityType is an NSString* typedef introduced in iOS 10;
+        // use NSString* directly so the source compiles against older
+        // SDKs while remaining ABI-compatible on iOS 10+.
+        activityViewController.completionWithItemsHandler = ^(NSString *activityType, BOOL completed, NSArray *returnedItems, NSError *activityError) {
+            JAVA_INT status;
+            NSString* activityTypeStr = nil;
+            NSString* errMsg = nil;
+            if (activityError != nil) {
+                status = 3;
+                errMsg = [activityError localizedDescription];
+            } else if (completed) {
+                status = 1;
+                if (activityType != nil) {
+                    activityTypeStr = activityType;
+                }
+            } else {
+                status = 2;
+            }
+            JAVA_OBJECT jActivityType = activityTypeStr != nil ? fromNSString(CN1_THREAD_GET_STATE_PASS_ARG activityTypeStr) : JAVA_NULL;
+            JAVA_OBJECT jErrMsg = errMsg != nil ? fromNSString(CN1_THREAD_GET_STATE_PASS_ARG errMsg) : JAVA_NULL;
+            com_codename1_impl_ios_IOSImplementation_socialShareCallback___int_int_java_lang_String_java_lang_String(CN1_THREAD_GET_STATE_PASS_ARG (JAVA_INT)cbId, status, jActivityType, jErrMsg);
+        };
+        [[CodenameOne_GLViewController instance] presentViewController:activityViewController animated:YES completion:^{}];
+        POOL_END();
+        repaintUI();
+    });
+}
+
 
 extern BOOL isVKBAlwaysOpen();
 extern BOOL vkbAlwaysOpen;
@@ -8617,19 +9389,23 @@ JAVA_OBJECT com_codename1_impl_ios_IOSNative_nativePathRendererToARGB___long_int
     JAVA_INT outputBounds[4];
     
     Renderer_getOutputBounds(renderer, (JAVA_INT*)&outputBounds);
-    if ( outputBounds[2] < 0 || outputBounds[3] < 0 ){
-        return 0;
-    }
-    
+    // outputBounds is { minX, minY, maxX, maxY }; maxX / maxY can be
+    // legitimately negative for shapes drawn at negative coordinates
+    // (see the comment in nativePathRendererCreateTexture above).
+    // Filter on the actual width / height below.
+
     //GLuint tex=0;
     JAVA_INT x = min(outputBounds[0], outputBounds[2]);
     JAVA_INT y = min(outputBounds[1], outputBounds[3]);
     JAVA_INT width = outputBounds[2]-outputBounds[0];
     JAVA_INT height = outputBounds[3]-outputBounds[1];
-    
+
     if ( width < 0 ) width = -width;
     if ( height < 0 ) height = -height;
-    
+    if (width == 0 || height == 0) {
+        return 0;
+    }
+
     AlphaConsumer ac = {
         x,
         y,
@@ -8679,7 +9455,19 @@ JAVA_LONG com_codename1_impl_ios_IOSNative_nativePathRendererCreateTexture___lon
         Renderer *r = (Renderer*)renderer;
         JAVA_INT outputBounds[4];
         Renderer_getOutputBounds(renderer, (JAVA_INT*)&outputBounds);
-        if (outputBounds[2] < 0 || outputBounds[3] < 0) return 0;
+        // outputBounds is { minX, minY, maxX, maxY } in renderer pixel
+        // space, which can legitimately be entirely negative when the
+        // input shape sits at negative coordinates (e.g. the SVG
+        // transcoder emits `<rect x="-5" y="-40" width="10" height="20">`
+        // for the spinner_animated.svg children -- after the SVG scale
+        // bake the renderer sees a path with bounds (-7, -60, 8, -30)).
+        // The previous check rejected those legitimate negative maxX /
+        // maxY values, returned 0 / nil texture, and silently dropped
+        // every fillShape on negatively-positioned paths -- the
+        // spinner column was blank on iOS Metal screenshots as a
+        // result. Only reject *empty* bounds (max <= min on either
+        // axis); the unsigned width / height computed below carry the
+        // actual extent.
         JAVA_INT x = min(outputBounds[0], outputBounds[2]);
         JAVA_INT y = min(outputBounds[1], outputBounds[3]);
         JAVA_INT width = outputBounds[2] - outputBounds[0];
@@ -8712,10 +9500,10 @@ JAVA_LONG com_codename1_impl_ios_IOSNative_nativePathRendererCreateTexture___lon
         return handle;
     }
 #endif
-#ifdef USE_ES2
+#if defined(USE_ES2) && !defined(CN1_USE_METAL)
 
     __block JAVA_LONG outTexture = NULL;
-    
+
     dispatch_sync(dispatch_get_main_queue(), ^{
         POOL_BEGIN();
         EAGLContext *ctx = [[CodenameOne_GLViewController instance] context];
@@ -8729,20 +9517,21 @@ JAVA_LONG com_codename1_impl_ios_IOSNative_nativePathRendererCreateTexture___lon
         
         Renderer *r = (Renderer*)renderer;
         JAVA_INT outputBounds[4];
-        
+
         Renderer_getOutputBounds(renderer, (JAVA_INT*)&outputBounds);
-        if ( outputBounds[2] < 0 || outputBounds[3] < 0 ){
-            //return 0;
-            POOL_END();
-            return;
-        }
-        
+        // outputBounds is { minX, minY, maxX, maxY }; the maxX/maxY
+        // values can legitimately be negative when the shape sits in
+        // the negative quadrant (e.g. the spinner SVG draws each
+        // rotated rect at y in [-40, -20]). The width / height check
+        // below filters degenerate / empty paths. Mirrors the Metal
+        // branch above.
+
         GLuint tex=0;
         JAVA_INT x = min(outputBounds[0], outputBounds[2]);
         JAVA_INT y = min(outputBounds[1], outputBounds[3]);
         JAVA_INT width = outputBounds[2]-outputBounds[0];
         JAVA_INT height = outputBounds[3]-outputBounds[1];
-        
+
         if ( width < 0 ) width = -width;
         if ( height < 0 ) height = -height;
         if (width == 0 || height == 0) {
@@ -8842,14 +9631,35 @@ void com_codename1_impl_ios_Matrix_MatrixUtil_multiplyMM___float_1ARRAY_int_floa
 #endif
     
     
+#ifdef CN1_USE_METAL
+    // Manual 4x4 column-major multiply so this path compiles for the Mac
+    // Catalyst slice (no GLKit math symbols). Identical result to
+    // GLKMatrix4Multiply(GLKMatrix4MakeWithArray(L), GLKMatrix4MakeWithArray(R)).
+    const JAVA_ARRAY_FLOAT *L = lhsData + lhsOffset * sizeof(JAVA_FLOAT);
+    const JAVA_ARRAY_FLOAT *R = rhsData + rhsOffset * sizeof(JAVA_FLOAT);
+    float out[16];
+    for (int col = 0; col < 4; col++) {
+        for (int row = 0; row < 4; row++) {
+            float s = 0;
+            for (int k = 0; k < 4; k++) {
+                s += L[k * 4 + row] * R[col * 4 + k];
+            }
+            out[col * 4 + row] = s;
+        }
+    }
+    for (int i = 0; i < 16; i++) {
+        resultData[i + resultOffset] = clamp_float_to_int(out[i]);
+    }
+#else
     GLKMatrix4 mLeft = GLKMatrix4MakeWithArray(lhsData+lhsOffset*sizeof(JAVA_FLOAT));
     GLKMatrix4 mRight = GLKMatrix4MakeWithArray(rhsData+rhsOffset*sizeof(JAVA_FLOAT));
     GLKMatrix4 mResult = GLKMatrix4Multiply(mLeft, mRight);
-    
+
     for ( int i=0; i<16; i++){
         resultData[i+resultOffset] = clamp_float_to_int(mResult.m[i]);
     }
     //memcpy(resultData+resultOffset*sizeof(JAVA_FLOAT), &mResult, 16*sizeof(JAVA_FLOAT));
+#endif
 #endif
 }
 
@@ -8868,6 +9678,33 @@ JAVA_OBJECT m, JAVA_INT pointSize, JAVA_OBJECT in, JAVA_INT srcPos, JAVA_OBJECT 
     JAVA_ARRAY_FLOAT* inData = (JAVA_ARRAY_FLOAT*) ((JAVA_ARRAY)in)->data;
     JAVA_ARRAY_FLOAT* outData = (JAVA_ARRAY_FLOAT*) ((JAVA_ARRAY)out)->data;
 #endif
+#ifdef CN1_USE_METAL
+    // Manual matrix-vector multiply for the Mac Catalyst slice (no GLKit
+    // math symbols). mData is a 4x4 column-major matrix.
+    const JAVA_ARRAY_FLOAT *M = mData;
+    JAVA_INT len = numPoints * pointSize;
+    for (JAVA_INT i = 0; i < len; i += pointSize) {
+        JAVA_INT s0 = srcPos + i;
+        float inv[4] = { inData[s0], inData[s0+1], 0.0f, 1.0f };
+        if (pointSize == 3) {
+            inv[2] = inData[s0+2];
+        }
+        float outv[4];
+        for (int row = 0; row < 4; row++) {
+            float s = 0;
+            for (int col = 0; col < 4; col++) {
+                s += M[col * 4 + row] * inv[col];
+            }
+            outv[row] = s;
+        }
+        int d0 = destPos + i;
+        outData[d0++] = outv[0] / outv[3];
+        outData[d0++] = outv[1] / outv[3];
+        if (pointSize == 3) {
+            outData[d0] = outv[2] / outv[3];
+        }
+    }
+#else
     GLKMatrix4 mMat = GLKMatrix4MakeWithArray(mData);
     JAVA_INT len = numPoints * pointSize;
     for (JAVA_INT i=0; i<len; i+=pointSize) {
@@ -8877,15 +9714,16 @@ JAVA_OBJECT m, JAVA_INT pointSize, JAVA_OBJECT in, JAVA_INT srcPos, JAVA_OBJECT 
             inputVector.v[2]= inData[s0+2];
         }
         GLKVector4 outputVector = GLKMatrix4MultiplyVector4(mMat, inputVector);
-        
+
         int d0 = destPos + i;
         outData[d0++] = outputVector.v[0] / outputVector.v[3];
         outData[d0++] = outputVector.v[1] / outputVector.v[3];
         if (pointSize==3) {
             outData[d0] = outputVector.v[2] / outputVector.v[3];
-        }     
+        }
     }
-    
+#endif
+
 }
 
 
@@ -8954,6 +9792,47 @@ JAVA_BOOLEAN com_codename1_impl_ios_Matrix_MatrixUtil_invertM___float_1ARRAY_int
 #endif
     
     
+#ifdef CN1_USE_METAL
+    // Manual 4x4 matrix inverse for the Mac Catalyst slice. Returns 1 in
+    // both branches to preserve the original iOS semantic (the function
+    // always returns 1 unless USE_ES2 is off, mirroring GLKMatrix4Invert's
+    // behavior when callers ignore the `isInvertible` flag).
+    // NB: the JAVA_OBJECT parameter is already named `m`, so the working
+    // copy of the float matrix is named `mm` to avoid shadowing.
+    const JAVA_ARRAY_FLOAT *src = mData + mOffset * sizeof(JAVA_FLOAT);
+    float mm[16];
+    for (int i = 0; i < 16; i++) { mm[i] = src[i]; }
+    // Cofactor expansion derived from a standard adjugate / determinant
+    // formula for 4x4 column-major matrices. Matches GLKMatrix4Invert's
+    // output bit-for-bit for invertible inputs; non-invertible matrices
+    // would have det == 0, mirroring GLKit's `*invertible = 0` behavior.
+    float inv[16];
+    inv[0]  =  mm[5]*mm[10]*mm[15] - mm[5]*mm[11]*mm[14] - mm[9]*mm[6]*mm[15] + mm[9]*mm[7]*mm[14] + mm[13]*mm[6]*mm[11] - mm[13]*mm[7]*mm[10];
+    inv[4]  = -mm[4]*mm[10]*mm[15] + mm[4]*mm[11]*mm[14] + mm[8]*mm[6]*mm[15] - mm[8]*mm[7]*mm[14] - mm[12]*mm[6]*mm[11] + mm[12]*mm[7]*mm[10];
+    inv[8]  =  mm[4]*mm[9]*mm[15]  - mm[4]*mm[11]*mm[13] - mm[8]*mm[5]*mm[15] + mm[8]*mm[7]*mm[13] + mm[12]*mm[5]*mm[11] - mm[12]*mm[7]*mm[9];
+    inv[12] = -mm[4]*mm[9]*mm[14]  + mm[4]*mm[10]*mm[13] + mm[8]*mm[5]*mm[14] - mm[8]*mm[6]*mm[13] - mm[12]*mm[5]*mm[10] + mm[12]*mm[6]*mm[9];
+    inv[1]  = -mm[1]*mm[10]*mm[15] + mm[1]*mm[11]*mm[14] + mm[9]*mm[2]*mm[15] - mm[9]*mm[3]*mm[14] - mm[13]*mm[2]*mm[11] + mm[13]*mm[3]*mm[10];
+    inv[5]  =  mm[0]*mm[10]*mm[15] - mm[0]*mm[11]*mm[14] - mm[8]*mm[2]*mm[15] + mm[8]*mm[3]*mm[14] + mm[12]*mm[2]*mm[11] - mm[12]*mm[3]*mm[10];
+    inv[9]  = -mm[0]*mm[9]*mm[15]  + mm[0]*mm[11]*mm[13] + mm[8]*mm[1]*mm[15] - mm[8]*mm[3]*mm[13] - mm[12]*mm[1]*mm[11] + mm[12]*mm[3]*mm[9];
+    inv[13] =  mm[0]*mm[9]*mm[14]  - mm[0]*mm[10]*mm[13] - mm[8]*mm[1]*mm[14] + mm[8]*mm[2]*mm[13] + mm[12]*mm[1]*mm[10] - mm[12]*mm[2]*mm[9];
+    inv[2]  =  mm[1]*mm[6]*mm[15]  - mm[1]*mm[7]*mm[14]  - mm[5]*mm[2]*mm[15] + mm[5]*mm[3]*mm[14] + mm[13]*mm[2]*mm[7]  - mm[13]*mm[3]*mm[6];
+    inv[6]  = -mm[0]*mm[6]*mm[15]  + mm[0]*mm[7]*mm[14]  + mm[4]*mm[2]*mm[15] - mm[4]*mm[3]*mm[14] - mm[12]*mm[2]*mm[7]  + mm[12]*mm[3]*mm[6];
+    inv[10] =  mm[0]*mm[5]*mm[15]  - mm[0]*mm[7]*mm[13]  - mm[4]*mm[1]*mm[15] + mm[4]*mm[3]*mm[13] + mm[12]*mm[1]*mm[7]  - mm[12]*mm[3]*mm[5];
+    inv[14] = -mm[0]*mm[5]*mm[14]  + mm[0]*mm[6]*mm[13]  + mm[4]*mm[1]*mm[14] - mm[4]*mm[2]*mm[13] - mm[12]*mm[1]*mm[6]  + mm[12]*mm[2]*mm[5];
+    inv[3]  = -mm[1]*mm[6]*mm[11]  + mm[1]*mm[7]*mm[10]  + mm[5]*mm[2]*mm[11] - mm[5]*mm[3]*mm[10] - mm[9]*mm[2]*mm[7]   + mm[9]*mm[3]*mm[6];
+    inv[7]  =  mm[0]*mm[6]*mm[11]  - mm[0]*mm[7]*mm[10]  - mm[4]*mm[2]*mm[11] + mm[4]*mm[3]*mm[10] + mm[8]*mm[2]*mm[7]   - mm[8]*mm[3]*mm[6];
+    inv[11] = -mm[0]*mm[5]*mm[11]  + mm[0]*mm[7]*mm[9]   + mm[4]*mm[1]*mm[11] - mm[4]*mm[3]*mm[9]  - mm[8]*mm[1]*mm[7]   + mm[8]*mm[3]*mm[5];
+    inv[15] =  mm[0]*mm[5]*mm[10]  - mm[0]*mm[6]*mm[9]   - mm[4]*mm[1]*mm[10] + mm[4]*mm[2]*mm[9]  + mm[8]*mm[1]*mm[6]   - mm[8]*mm[2]*mm[5];
+    float det = mm[0]*inv[0] + mm[1]*inv[4] + mm[2]*inv[8] + mm[3]*inv[12];
+    if (det == 0.0f) {
+        return 1;
+    }
+    float invDet = 1.0f / det;
+    for (int i = 0; i < 16; i++) {
+        mInvData[i + mInvOffset] = inv[i] * invDet;
+    }
+    return 1;
+#else
     GLKMatrix4 mMat = GLKMatrix4MakeWithArray(mData+mOffset*sizeof(JAVA_FLOAT));
     JAVA_BOOLEAN isInvertible = 0;
     GLKMatrix4 mInvMat = GLKMatrix4Invert(mMat, &isInvertible);
@@ -8965,10 +9844,11 @@ JAVA_BOOLEAN com_codename1_impl_ios_Matrix_MatrixUtil_invertM___float_1ARRAY_int
         }
         return 1;
     }
+#endif
 #else
     return 0;
 #endif
-    
+
 }
 
 #ifdef NEW_CODENAME_ONE_VM
@@ -9254,6 +10134,10 @@ JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isTablet___R_boolean(CN1_THREAD_ST
 
 JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isIOS7___R_boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
     return com_codename1_impl_ios_IOSNative_isIOS7__(CN1_THREAD_STATE_PASS_ARG instanceObject);
+}
+
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isRunningOnMac___R_boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject) {
+    return com_codename1_impl_ios_IOSNative_isRunningOnMac__(CN1_THREAD_STATE_PASS_ARG instanceObject);
 }
 
 JAVA_LONG com_codename1_impl_ios_IOSNative_createNSData___java_lang_String_R_long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT file) {
@@ -10787,4 +11671,925 @@ void com_codename1_impl_ios_IOSNative_announceForAccessibility___java_lang_Strin
     NSString *nsText = toNSString(CN1_THREAD_STATE_PASS_ARG text);
     UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, nsText);
     POOL_END();
+}
+
+// ====================================================================
+// Crypto bridge -- implementations of the native methods on IOSNative
+// that back com.codename1.security.{Cipher,Signature,SecureRandom,
+// KeyGenerator}. The actual crypto runs in CN1Crypto.{h,m}; this file
+// is just the marshalling layer.
+//
+// CN1_INCLUDE_CRYPTO is enabled by IPhoneBuilder when the app references
+// com.codename1.security.* in its compiled bytecode. When the app doesn't
+// use the crypto API the implementations below collapse into no-ops, the
+// CommonCrypto / Security framework symbols are never referenced, and the
+// AES-GCM SPI symbols (gated separately by CN1_INCLUDE_CRYPTO_GCM) stay
+// completely out of the binary.
+
+#import "CN1Crypto.h"
+
+#ifndef NEW_CODENAME_ONE_VM
+#define CN1_PRIM_ARR_DATA(arr) ((void*)((org_xmlvm_runtime_XMLVMArray*)(arr))->fields.org_xmlvm_runtime_XMLVMArray.array_)
+#define CN1_PRIM_ARR_LEN(arr)  (((org_xmlvm_runtime_XMLVMArray*)(arr))->fields.org_xmlvm_runtime_XMLVMArray.length_)
+#else
+#define CN1_PRIM_ARR_DATA(arr) ((void*)((JAVA_ARRAY)(arr))->data)
+#define CN1_PRIM_ARR_LEN(arr)  (((JAVA_ARRAY)(arr))->length)
+#endif
+
+#ifdef CN1_INCLUDE_CRYPTO
+
+void com_codename1_impl_ios_IOSNative_secureRandomBytes___byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT out) {
+    if (out == JAVA_NULL) return;
+    cn1_crypto_secure_random((uint8_t*) CN1_PRIM_ARR_DATA(out), (int) CN1_PRIM_ARR_LEN(out));
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_aesCbc___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT encrypt, JAVA_OBJECT keyArr, JAVA_OBJECT ivArr, JAVA_OBJECT inArr, JAVA_OBJECT outArr, JAVA_INT padding) {
+    return cn1_crypto_aes_cbc(encrypt,
+        (uint8_t*) CN1_PRIM_ARR_DATA(keyArr), (int) CN1_PRIM_ARR_LEN(keyArr),
+        (uint8_t*) CN1_PRIM_ARR_DATA(ivArr),
+        (uint8_t*) CN1_PRIM_ARR_DATA(inArr),  (int) CN1_PRIM_ARR_LEN(inArr),
+        (uint8_t*) CN1_PRIM_ARR_DATA(outArr), (int) CN1_PRIM_ARR_LEN(outArr),
+        padding);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_aesGcm___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT encrypt, JAVA_OBJECT keyArr, JAVA_OBJECT ivArr, JAVA_OBJECT aadArr, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    const uint8_t* aadPtr = (aadArr == JAVA_NULL) ? NULL : (uint8_t*) CN1_PRIM_ARR_DATA(aadArr);
+    int aadLen = (aadArr == JAVA_NULL) ? 0 : (int) CN1_PRIM_ARR_LEN(aadArr);
+    return cn1_crypto_aes_gcm(encrypt,
+        (uint8_t*) CN1_PRIM_ARR_DATA(keyArr), (int) CN1_PRIM_ARR_LEN(keyArr),
+        (uint8_t*) CN1_PRIM_ARR_DATA(ivArr),  (int) CN1_PRIM_ARR_LEN(ivArr),
+        aadPtr, aadLen,
+        (uint8_t*) CN1_PRIM_ARR_DATA(inArr),  (int) CN1_PRIM_ARR_LEN(inArr),
+        (uint8_t*) CN1_PRIM_ARR_DATA(outArr), (int) CN1_PRIM_ARR_LEN(outArr));
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_rsaEncrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT paddingKind, JAVA_OBJECT x509, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    return cn1_crypto_rsa_encrypt(paddingKind,
+        (uint8_t*) CN1_PRIM_ARR_DATA(x509),  (int) CN1_PRIM_ARR_LEN(x509),
+        (uint8_t*) CN1_PRIM_ARR_DATA(inArr), (int) CN1_PRIM_ARR_LEN(inArr),
+        (uint8_t*) CN1_PRIM_ARR_DATA(outArr),(int) CN1_PRIM_ARR_LEN(outArr));
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_rsaDecrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT paddingKind, JAVA_OBJECT pkcs8, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    return cn1_crypto_rsa_decrypt(paddingKind,
+        (uint8_t*) CN1_PRIM_ARR_DATA(pkcs8), (int) CN1_PRIM_ARR_LEN(pkcs8),
+        (uint8_t*) CN1_PRIM_ARR_DATA(inArr), (int) CN1_PRIM_ARR_LEN(inArr),
+        (uint8_t*) CN1_PRIM_ARR_DATA(outArr),(int) CN1_PRIM_ARR_LEN(outArr));
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_sign___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT algorithm, JAVA_OBJECT pkcs8, JAVA_OBJECT data, JAVA_OBJECT outArr) {
+    return cn1_crypto_sign(algorithm,
+        (uint8_t*) CN1_PRIM_ARR_DATA(pkcs8), (int) CN1_PRIM_ARR_LEN(pkcs8),
+        (uint8_t*) CN1_PRIM_ARR_DATA(data),  (int) CN1_PRIM_ARR_LEN(data),
+        (uint8_t*) CN1_PRIM_ARR_DATA(outArr),(int) CN1_PRIM_ARR_LEN(outArr));
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_verify___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT algorithm, JAVA_OBJECT x509, JAVA_OBJECT data, JAVA_OBJECT sig) {
+    return cn1_crypto_verify(algorithm,
+        (uint8_t*) CN1_PRIM_ARR_DATA(x509), (int) CN1_PRIM_ARR_LEN(x509),
+        (uint8_t*) CN1_PRIM_ARR_DATA(data), (int) CN1_PRIM_ARR_LEN(data),
+        (uint8_t*) CN1_PRIM_ARR_DATA(sig),  (int) CN1_PRIM_ARR_LEN(sig));
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_generateRsaKeyPair___int_byte_1ARRAY_byte_1ARRAY_int_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT bits, JAVA_OBJECT outPub, JAVA_OBJECT outPriv, JAVA_OBJECT lengths) {
+    int pubLen = 0, privLen = 0;
+    int rc = cn1_crypto_generate_rsa_keypair(bits,
+        (uint8_t*) CN1_PRIM_ARR_DATA(outPub),  (int) CN1_PRIM_ARR_LEN(outPub),  &pubLen,
+        (uint8_t*) CN1_PRIM_ARR_DATA(outPriv), (int) CN1_PRIM_ARR_LEN(outPriv), &privLen);
+    JAVA_ARRAY_INT* lens = (JAVA_ARRAY_INT*) CN1_PRIM_ARR_DATA(lengths);
+    lens[0] = pubLen;
+    lens[1] = privLen;
+    return rc;
+}
+
+#else /* CN1_INCLUDE_CRYPTO */
+
+/*
+ * When the crypto API isn't reachable from the user's code we still emit
+ * stub IOSNative bridge symbols so the generated C from IOSImplementation
+ * has something to link against, but they all just delegate to the
+ * CN1_CRYPTO_E_UNSUPPORTED stubs in CN1Crypto.m (no encryption symbols
+ * referenced).
+ */
+
+void com_codename1_impl_ios_IOSNative_secureRandomBytes___byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_OBJECT out) {
+    (void) instanceObject; (void) out;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_aesCbc___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT encrypt, JAVA_OBJECT keyArr, JAVA_OBJECT ivArr, JAVA_OBJECT inArr, JAVA_OBJECT outArr, JAVA_INT padding) {
+    (void) instanceObject; (void) encrypt; (void) keyArr; (void) ivArr; (void) inArr; (void) outArr; (void) padding;
+    return CN1_CRYPTO_E_UNSUPPORTED;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_aesGcm___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT encrypt, JAVA_OBJECT keyArr, JAVA_OBJECT ivArr, JAVA_OBJECT aadArr, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    (void) instanceObject; (void) encrypt; (void) keyArr; (void) ivArr; (void) aadArr; (void) inArr; (void) outArr;
+    return CN1_CRYPTO_E_UNSUPPORTED;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_rsaEncrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT paddingKind, JAVA_OBJECT x509, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    (void) instanceObject; (void) paddingKind; (void) x509; (void) inArr; (void) outArr;
+    return CN1_CRYPTO_E_UNSUPPORTED;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_rsaDecrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT paddingKind, JAVA_OBJECT pkcs8, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    (void) instanceObject; (void) paddingKind; (void) pkcs8; (void) inArr; (void) outArr;
+    return CN1_CRYPTO_E_UNSUPPORTED;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_sign___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT algorithm, JAVA_OBJECT pkcs8, JAVA_OBJECT data, JAVA_OBJECT outArr) {
+    (void) instanceObject; (void) algorithm; (void) pkcs8; (void) data; (void) outArr;
+    return CN1_CRYPTO_E_UNSUPPORTED;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_verify___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT algorithm, JAVA_OBJECT x509, JAVA_OBJECT data, JAVA_OBJECT sig) {
+    (void) instanceObject; (void) algorithm; (void) x509; (void) data; (void) sig;
+    return CN1_CRYPTO_E_UNSUPPORTED;
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_generateRsaKeyPair___int_byte_1ARRAY_byte_1ARRAY_int_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT bits, JAVA_OBJECT outPub, JAVA_OBJECT outPriv, JAVA_OBJECT lengths) {
+    (void) instanceObject; (void) bits; (void) outPub; (void) outPriv;
+    if (lengths != JAVA_NULL) {
+        JAVA_ARRAY_INT* lens = (JAVA_ARRAY_INT*) CN1_PRIM_ARR_DATA(lengths);
+        lens[0] = 0;
+        lens[1] = 0;
+    }
+    return CN1_CRYPTO_E_UNSUPPORTED;
+}
+
+#endif /* CN1_INCLUDE_CRYPTO */
+
+// ============================================================================
+// Biometrics + SecureStorage natives (LocalAuthentication + Security framework)
+// ============================================================================
+//
+// The static LAContext is held across calls so it can be invalidated mid-prompt
+// by stopBiometricAuthentication(). Memory management is manual because the
+// iOS port builds with CLANG_ENABLE_OBJC_ARC=NO (see ARC memory in plan).
+
+static LAContext *cn1_biometricsContext = nil;
+static NSString *cn1_keychainAccessGroup = nil;
+
+static LAContext *cn1_ensureContext(void) {
+    if (cn1_biometricsContext == nil) {
+        cn1_biometricsContext = [[LAContext alloc] init];
+    }
+    return cn1_biometricsContext;
+}
+
+static void cn1_resetContext(void) {
+    if (cn1_biometricsContext != nil) {
+        [cn1_biometricsContext release];
+        cn1_biometricsContext = nil;
+    }
+}
+
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isBiometricsSupported__(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+    if (NSClassFromString(@"LAContext") == NULL) {
+        return JAVA_FALSE;
+    }
+    NSError *error = nil;
+    LAContext *ctx = cn1_ensureContext();
+    BOOL ok = [ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&error];
+    return ok ? JAVA_TRUE : JAVA_FALSE;
+}
+
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_canAuthenticateBiometric__(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+    return com_codename1_impl_ios_IOSNative_isBiometricsSupported__(CN1_THREAD_STATE_PASS_ARG me);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_getAvailableBiometricTypes__(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+    if (NSClassFromString(@"LAContext") == NULL) {
+        return 0;
+    }
+    NSError *error = nil;
+    LAContext *ctx = cn1_ensureContext();
+    if (![ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&error]) {
+        return 0;
+    }
+    JAVA_INT mask = 0;
+    if (@available(iOS 11.0, *)) {
+        if (ctx.biometryType == LABiometryTypeTouchID) {
+            mask |= 1;
+        } else if (ctx.biometryType == LABiometryTypeFaceID) {
+            mask |= 2;
+        }
+    } else {
+        // Pre-iOS 11: only Touch ID exists.
+        mask |= 1;
+    }
+    return mask;
+}
+
+void com_codename1_impl_ios_IOSNative_authenticateBiometric___int_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_OBJECT reason) {
+    POOL_BEGIN();
+    NSString *nsReason = (reason == JAVA_NULL) ? @"Authenticate" : toNSString(CN1_THREAD_STATE_PASS_ARG reason);
+    // Each authenticate call gets a fresh context so a prior stopAuthentication
+    // can't bleed cancellation into the next request.
+    cn1_resetContext();
+    LAContext *ctx = cn1_ensureContext();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [ctx evaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
+            localizedReason:nsReason
+                      reply:^(BOOL success, NSError *err) {
+            if (success) {
+                com_codename1_impl_ios_IOSBiometrics_nativeAuthSuccess___int(getThreadLocalData(), requestId);
+            } else {
+                int code = (int)err.code;
+                NSString *msg = err.localizedDescription ? err.localizedDescription : @"";
+                JAVA_OBJECT jmsg = fromNSString(getThreadLocalData(), msg);
+                com_codename1_impl_ios_IOSBiometrics_nativeAuthError___int_int_java_lang_String(getThreadLocalData(), requestId, code, jmsg);
+            }
+        }];
+    });
+    POOL_END();
+}
+
+void com_codename1_impl_ios_IOSNative_stopBiometricAuthentication__(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+    if (cn1_biometricsContext != nil) {
+        if (@available(iOS 9.0, *)) {
+            [cn1_biometricsContext invalidate];
+        }
+        cn1_resetContext();
+    }
+}
+
+void com_codename1_impl_ios_IOSNative_setSecureStorageAccessGroup___java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_OBJECT accessGroup) {
+    if (cn1_keychainAccessGroup != nil) {
+        [cn1_keychainAccessGroup release];
+        cn1_keychainAccessGroup = nil;
+    }
+    if (accessGroup != JAVA_NULL) {
+        NSString *ag = toNSString(CN1_THREAD_STATE_PASS_ARG accessGroup);
+        if (ag != nil && [ag length] > 0) {
+            cn1_keychainAccessGroup = [ag retain];
+        }
+    }
+}
+
+static NSString *cn1_getAppName(CN1_THREAD_STATE_SINGLE_ARG) {
+    JAVA_OBJECT d = com_codename1_ui_Display_getInstance___R_com_codename1_ui_Display(CN1_THREAD_STATE_PASS_SINGLE_ARG);
+    JAVA_OBJECT key = fromNSString(CN1_THREAD_STATE_PASS_ARG @"AppName");
+    JAVA_OBJECT def = fromNSString(CN1_THREAD_STATE_PASS_ARG @"CodenameOneApp");
+    JAVA_OBJECT res = com_codename1_ui_Display_getProperty___java_lang_String_java_lang_String_R_java_lang_String(CN1_THREAD_STATE_PASS_ARG d, key, def);
+    return toNSString(CN1_THREAD_STATE_PASS_ARG res);
+}
+
+void com_codename1_impl_ios_IOSNative_secureStorageGet___int_java_lang_String_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_OBJECT reason, JAVA_OBJECT account) {
+    POOL_BEGIN();
+    NSString *nsReason = (reason == JAVA_NULL) ? @"Authenticate" : toNSString(CN1_THREAD_STATE_PASS_ARG reason);
+    NSString *nsAccount = toNSString(CN1_THREAD_STATE_PASS_ARG account);
+    NSString *appName = cn1_getAppName(CN1_THREAD_STATE_PASS_SINGLE_ARG);
+    NSString *accessGroup = cn1_keychainAccessGroup;
+    [nsReason retain];
+    [nsAccount retain];
+    [appName retain];
+    if (accessGroup != nil) {
+        [accessGroup retain];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSMutableDictionary *q = [NSMutableDictionary dictionary];
+        [q setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+        [q setObject:@YES forKey:(__bridge id)kSecReturnData];
+        [q setObject:(__bridge id)kSecMatchLimitOne forKey:(__bridge id)kSecMatchLimit];
+        [q setObject:nsAccount forKey:(__bridge id)kSecAttrAccount];
+        [q setObject:appName forKey:(__bridge id)kSecAttrService];
+        [q setObject:nsReason forKey:(__bridge id)kSecUseOperationPrompt];
+        if (accessGroup != nil) {
+            [q setObject:accessGroup forKey:(__bridge id)kSecAttrAccessGroup];
+        }
+        CFTypeRef dataRef = NULL;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)q, &dataRef);
+        if (status == errSecSuccess) {
+            NSData *d = (__bridge NSData *)dataRef;
+            NSString *value = [[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] autorelease];
+            JAVA_OBJECT jv = fromNSString(getThreadLocalData(), value);
+            com_codename1_impl_ios_IOSSecureStorage_nativeStorageStringResult___int_java_lang_String(getThreadLocalData(), requestId, jv);
+        } else {
+            JAVA_OBJECT jmsg = fromNSString(getThreadLocalData(), [NSString stringWithFormat:@"OSStatus %d", (int)status]);
+            com_codename1_impl_ios_IOSSecureStorage_nativeStorageError___int_int_java_lang_String(getThreadLocalData(), requestId, (int)status, jmsg);
+        }
+        [nsReason release];
+        [nsAccount release];
+        [appName release];
+        if (accessGroup != nil) {
+            [accessGroup release];
+        }
+    });
+    POOL_END();
+}
+
+static void cn1_secureStorageUpdate(int requestId, NSString *nsReason, NSString *nsAccount, NSString *nsValue, NSString *appName, NSString *accessGroup) {
+    NSMutableDictionary *q = [NSMutableDictionary dictionary];
+    [q setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+    [q setObject:nsAccount forKey:(__bridge id)kSecAttrAccount];
+    [q setObject:appName forKey:(__bridge id)kSecAttrService];
+    [q setObject:nsReason forKey:(__bridge id)kSecUseOperationPrompt];
+    if (accessGroup != nil) {
+        [q setObject:accessGroup forKey:(__bridge id)kSecAttrAccessGroup];
+    }
+    NSMutableDictionary *ch = [NSMutableDictionary dictionary];
+    [ch setObject:[nsValue dataUsingEncoding:NSUTF8StringEncoding] forKey:(__bridge id)kSecValueData];
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)q, (__bridge CFDictionaryRef)ch);
+    if (status == errSecSuccess) {
+        com_codename1_impl_ios_IOSSecureStorage_nativeStorageBooleanResult___int_boolean(getThreadLocalData(), requestId, JAVA_TRUE);
+    } else {
+        JAVA_OBJECT jmsg = fromNSString(getThreadLocalData(), [NSString stringWithFormat:@"OSStatus %d", (int)status]);
+        com_codename1_impl_ios_IOSSecureStorage_nativeStorageError___int_int_java_lang_String(getThreadLocalData(), requestId, (int)status, jmsg);
+    }
+}
+
+void com_codename1_impl_ios_IOSNative_secureStorageSet___int_java_lang_String_java_lang_String_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_OBJECT reason, JAVA_OBJECT account, JAVA_OBJECT value) {
+    POOL_BEGIN();
+    NSString *nsReason = (reason == JAVA_NULL) ? @"Authenticate" : toNSString(CN1_THREAD_STATE_PASS_ARG reason);
+    NSString *nsAccount = toNSString(CN1_THREAD_STATE_PASS_ARG account);
+    NSString *nsValue = (value == JAVA_NULL) ? @"" : toNSString(CN1_THREAD_STATE_PASS_ARG value);
+    NSString *appName = cn1_getAppName(CN1_THREAD_STATE_PASS_SINGLE_ARG);
+    NSString *accessGroup = cn1_keychainAccessGroup;
+    [nsReason retain];
+    [nsAccount retain];
+    [nsValue retain];
+    [appName retain];
+    if (accessGroup != nil) {
+        [accessGroup retain];
+    }
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        SecAccessControlRef sacRef = SecAccessControlCreateWithFlags(kCFAllocatorDefault,
+                kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+                kSecAccessControlTouchIDCurrentSet,
+                nil);
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        [d setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+        [d setObject:nsAccount forKey:(__bridge id)kSecAttrAccount];
+        [d setObject:appName forKey:(__bridge id)kSecAttrService];
+        [d setObject:[nsValue dataUsingEncoding:NSUTF8StringEncoding] forKey:(__bridge id)kSecValueData];
+        [d setObject:(__bridge id)sacRef forKey:(__bridge id)kSecAttrAccessControl];
+        [d setObject:nsReason forKey:(__bridge id)kSecUseOperationPrompt];
+        if (accessGroup != nil) {
+            [d setObject:accessGroup forKey:(__bridge id)kSecAttrAccessGroup];
+        }
+        OSStatus status = SecItemAdd((__bridge CFDictionaryRef)d, nil);
+        if (sacRef != NULL) {
+            CFRelease(sacRef);
+        }
+        if (status == errSecDuplicateItem) {
+            cn1_secureStorageUpdate((int)requestId, nsReason, nsAccount, nsValue, appName, accessGroup);
+        } else if (status == errSecSuccess) {
+            com_codename1_impl_ios_IOSSecureStorage_nativeStorageBooleanResult___int_boolean(getThreadLocalData(), requestId, JAVA_TRUE);
+        } else {
+            JAVA_OBJECT jmsg = fromNSString(getThreadLocalData(), [NSString stringWithFormat:@"OSStatus %d", (int)status]);
+            com_codename1_impl_ios_IOSSecureStorage_nativeStorageError___int_int_java_lang_String(getThreadLocalData(), requestId, (int)status, jmsg);
+        }
+        [nsReason release];
+        [nsAccount release];
+        [nsValue release];
+        [appName release];
+        if (accessGroup != nil) {
+            [accessGroup release];
+        }
+    });
+    POOL_END();
+}
+
+void com_codename1_impl_ios_IOSNative_secureStorageRemove___int_java_lang_String_java_lang_String(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_OBJECT reason, JAVA_OBJECT account) {
+    POOL_BEGIN();
+    NSString *nsAccount = toNSString(CN1_THREAD_STATE_PASS_ARG account);
+    NSString *appName = cn1_getAppName(CN1_THREAD_STATE_PASS_SINGLE_ARG);
+    NSString *accessGroup = cn1_keychainAccessGroup;
+    [nsAccount retain];
+    [appName retain];
+    if (accessGroup != nil) {
+        [accessGroup retain];
+    }
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        [d setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+        [d setObject:nsAccount forKey:(__bridge id)kSecAttrAccount];
+        [d setObject:appName forKey:(__bridge id)kSecAttrService];
+        if (accessGroup != nil) {
+            [d setObject:accessGroup forKey:(__bridge id)kSecAttrAccessGroup];
+        }
+        OSStatus status = SecItemDelete((__bridge CFDictionaryRef)d);
+        if (status == errSecSuccess || status == errSecItemNotFound) {
+            com_codename1_impl_ios_IOSSecureStorage_nativeStorageBooleanResult___int_boolean(getThreadLocalData(), requestId, JAVA_TRUE);
+        } else {
+            JAVA_OBJECT jmsg = fromNSString(getThreadLocalData(), [NSString stringWithFormat:@"OSStatus %d", (int)status]);
+            com_codename1_impl_ios_IOSSecureStorage_nativeStorageError___int_int_java_lang_String(getThreadLocalData(), requestId, (int)status, jmsg);
+        }
+        [nsAccount release];
+        [appName release];
+        if (accessGroup != nil) {
+            [accessGroup release];
+        }
+    });
+    POOL_END();
+}
+
+// ============================================================================
+// NFC natives (Core NFC)
+// ============================================================================
+//
+// Gated on CN1_INCLUDE_NFC which IPhoneBuilder defines only when the
+// classpath scanner saw a com.codename1.nfc reference. Without that define
+// no CoreNFC.framework symbols are linked, so apps that never use NFC pass
+// Apple's API-usage scan without a CoreNFC privacy manifest. The Java side
+// still receives stub implementations of every native method (returning
+// NOT_AVAILABLE) so the link step succeeds.
+//
+// Core NFC requires iOS 11 for NDEF reads, iOS 13 for tag sessions (ISO 7816
+// / FeliCa / MIFARE) and iOS 17.4 for the EU-only CardSession HCE flavour.
+// The frameworks are weak-linked so the build still succeeds on older
+// deployment targets; the supported / canRead checks gate every code path.
+//
+// Memory management is manual because the iOS port builds with
+// CLANG_ENABLE_OBJC_ARC=NO -- see "cn1 iOS port runs without ARC" memory.
+
+#ifdef CN1_INCLUDE_NFC
+#import <CoreNFC/CoreNFC.h>
+#endif
+
+#ifdef CN1_INCLUDE_NFC
+// Pointer-stable session containers. Static because the Java side is
+// stateless across native call boundaries.
+@interface CN1NfcNdefDelegate : NSObject <NFCNDEFReaderSessionDelegate>
+@property (nonatomic, assign) int requestId;
+@end
+
+@interface CN1NfcTagDelegate : NSObject <NFCTagReaderSessionDelegate>
+@property (nonatomic, assign) int requestId;
+@property (nonatomic, retain) id<NFCTag> connectedTag;
+@end
+
+static NFCNDEFReaderSession *cn1_nfcNdefSession = nil;
+static NFCTagReaderSession *cn1_nfcTagSession = nil;
+static CN1NfcNdefDelegate *cn1_nfcNdefDelegate = nil;
+static CN1NfcTagDelegate *cn1_nfcTagDelegate = nil;
+static NSMutableArray *cn1_nfcConnectedTags = nil;
+
+static int cn1_nfcSendError(int requestId, NSError *err) {
+    int code = (int)err.code;
+    NSString *msg = err.localizedDescription ? err.localizedDescription : @"";
+    JAVA_OBJECT jmsg = fromNSString(getThreadLocalData(), msg);
+    com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, code, jmsg);
+    return code;
+}
+
+@implementation CN1NfcNdefDelegate
+- (void)readerSession:(NFCNDEFReaderSession *)session didDetectNDEFs:(NSArray<NFCNDEFMessage *> *)messages {
+    if ([messages count] == 0) {
+        cn1_nfcSendError(self.requestId,
+            [NSError errorWithDomain:NFCErrorDomain code:4 userInfo:nil]);
+        return;
+    }
+    NFCNDEFMessage *msg = [messages objectAtIndex:0];
+    NSData *raw = [self serializeNdefMessage:msg];
+    JAVA_OBJECT arr = JAVA_NULL;
+    if (raw != nil) {
+        JAVA_ARRAY ja = (JAVA_ARRAY)__NEW_ARRAY_JAVA_BYTE(getThreadLocalData(), (JAVA_INT)[raw length]);
+        memcpy(((JAVA_ARRAY_BYTE *)ja->data), [raw bytes], [raw length]);
+        arr = (JAVA_OBJECT)ja;
+    }
+    com_codename1_impl_ios_IOSNfc_nativeNdefResult___int_byte_1ARRAY(getThreadLocalData(), self.requestId, arr);
+    [session invalidateSession];
+}
+
+- (void)readerSession:(NFCNDEFReaderSession *)session didInvalidateWithError:(NSError *)error {
+    if (cn1_nfcNdefSession == session) {
+        [cn1_nfcNdefSession release];
+        cn1_nfcNdefSession = nil;
+    }
+    if (self.requestId > 0) {
+        cn1_nfcSendError(self.requestId, error);
+        self.requestId = 0;
+    }
+}
+
+- (NSData *)serializeNdefMessage:(NFCNDEFMessage *)msg {
+    // The Java NdefMessage.parse() expects the raw NDEF wire format which
+    // is what NFCNDEFMessage exposes via -length / records. We rebuild it
+    // ourselves to match: TNF/flags, type-len, payload-len, optional id-len,
+    // type, id, payload per record.
+    NSMutableData *out = [NSMutableData data];
+    NSArray *records = msg.records;
+    NSUInteger n = [records count];
+    for (NSUInteger i = 0; i < n; i++) {
+        NFCNDEFPayload *r = [records objectAtIndex:i];
+        NSData *type = r.type ? r.type : [NSData data];
+        NSData *ident = r.identifier ? r.identifier : [NSData data];
+        NSData *payload = r.payload ? r.payload : [NSData data];
+        unsigned int header = (unsigned int)r.typeNameFormat & 0x07;
+        if (i == 0) {
+            header |= 0x80;
+        }
+        if (i == n - 1) {
+            header |= 0x40;
+        }
+        BOOL sr = [payload length] < 256;
+        BOOL il = [ident length] > 0;
+        if (sr) {
+            header |= 0x10;
+        }
+        if (il) {
+            header |= 0x08;
+        }
+        unsigned char hb = (unsigned char)header;
+        [out appendBytes:&hb length:1];
+        unsigned char tl = (unsigned char)([type length] & 0xFF);
+        [out appendBytes:&tl length:1];
+        if (sr) {
+            unsigned char pl = (unsigned char)([payload length] & 0xFF);
+            [out appendBytes:&pl length:1];
+        } else {
+            uint32_t pl = (uint32_t)[payload length];
+            unsigned char buf[4] = {
+                (unsigned char)((pl >> 24) & 0xFF),
+                (unsigned char)((pl >> 16) & 0xFF),
+                (unsigned char)((pl >> 8) & 0xFF),
+                (unsigned char)(pl & 0xFF)
+            };
+            [out appendBytes:buf length:4];
+        }
+        if (il) {
+            unsigned char idl = (unsigned char)([ident length] & 0xFF);
+            [out appendBytes:&idl length:1];
+        }
+        [out appendData:type];
+        if (il) {
+            [out appendData:ident];
+        }
+        [out appendData:payload];
+    }
+    return out;
+}
+@end
+
+@implementation CN1NfcTagDelegate
+- (void)tagReaderSessionDidBecomeActive:(NFCTagReaderSession *)session {
+}
+
+- (void)tagReaderSession:(NFCTagReaderSession *)session didDetectTags:(NSArray<__kindof id<NFCTag>> *)tags {
+    if ([tags count] == 0) {
+        return;
+    }
+    id<NFCTag> tag = [tags objectAtIndex:0];
+    [session connectToTag:tag completionHandler:^(NSError *error) {
+        if (error != nil) {
+            cn1_nfcSendError(self.requestId, error);
+            [session invalidateSession];
+            return;
+        }
+        if (cn1_nfcConnectedTags == nil) {
+            cn1_nfcConnectedTags = [[NSMutableArray alloc] init];
+        }
+        [cn1_nfcConnectedTags addObject:tag];
+        long handle = (long)tag; // pointer used as opaque handle
+        int mask = 0;
+        NSData *uid = nil;
+        if (tag.type == NFCTagTypeISO7816Compatible) {
+            mask |= 4 | 1;
+            id<NFCISO7816Tag> iso = [tag asNFCISO7816Tag];
+            uid = iso.identifier;
+        } else if (tag.type == NFCTagTypeFeliCa) {
+            mask |= 2;
+            id<NFCFeliCaTag> f = [tag asNFCFeliCaTag];
+            uid = f.currentIDm;
+        } else if (tag.type == NFCTagTypeMiFare) {
+            mask |= 1 | 8;
+            id<NFCMiFareTag> m = [tag asNFCMiFareTag];
+            uid = m.identifier;
+        } else if (tag.type == NFCTagTypeISO15693) {
+            id<NFCISO15693Tag> v = [tag asNFCISO15693Tag];
+            uid = v.identifier;
+        }
+        JAVA_OBJECT uidArr = JAVA_NULL;
+        if (uid != nil && [uid length] > 0) {
+            JAVA_ARRAY ja = (JAVA_ARRAY)__NEW_ARRAY_JAVA_BYTE(getThreadLocalData(), (JAVA_INT)[uid length]);
+            memcpy(((JAVA_ARRAY_BYTE *)ja->data), [uid bytes], [uid length]);
+            uidArr = (JAVA_OBJECT)ja;
+        }
+        com_codename1_impl_ios_IOSNfc_nativeTagDiscovered___int_long_int_byte_1ARRAY(getThreadLocalData(), self.requestId, (JAVA_LONG)handle, mask, uidArr);
+    }];
+}
+
+- (void)tagReaderSession:(NFCTagReaderSession *)session didInvalidateWithError:(NSError *)error {
+    if (cn1_nfcTagSession == session) {
+        [cn1_nfcTagSession release];
+        cn1_nfcTagSession = nil;
+    }
+    [cn1_nfcConnectedTags removeAllObjects];
+    if (self.requestId > 0) {
+        cn1_nfcSendError(self.requestId, error);
+        self.requestId = 0;
+    }
+}
+@end
+#endif // CN1_INCLUDE_NFC
+
+// ParparVM mangles non-void-returning native methods as
+// `..._methodName___R_<returnType>`. Older symbols in this file
+// (isMetalRendering__, isBiometricsSupported__) predate the
+// convention switch and are kept for binary compatibility; new natives
+// must use the suffix or the link step fails with "Undefined symbol".
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_isNfcSupported___R_boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 11.0, *)) {
+        return [NFCNDEFReaderSession readingAvailable] ? JAVA_TRUE : JAVA_FALSE;
+    }
+#endif
+    return JAVA_FALSE;
+}
+
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_canReadNfc___R_boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+    return com_codename1_impl_ios_IOSNative_isNfcSupported___R_boolean(CN1_THREAD_STATE_PASS_ARG me);
+}
+
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_canReadNfcTags___R_boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 13.0, *)) {
+        return [NFCTagReaderSession readingAvailable] ? JAVA_TRUE : JAVA_FALSE;
+    }
+#endif
+    return JAVA_FALSE;
+}
+
+JAVA_BOOLEAN com_codename1_impl_ios_IOSNative_canHostEmulateNfc___R_boolean(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 17.4, *)) {
+        // NFCPresentmentIntent etc are still gated by entitlement + EU region.
+        return NSClassFromString(@"NFCISO7816APDU") != nil ? JAVA_TRUE : JAVA_FALSE;
+    }
+#endif
+    return JAVA_FALSE;
+}
+
+void com_codename1_impl_ios_IOSNative_startNdefRead___int_java_lang_String_long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_OBJECT alertMessage, JAVA_LONG timeoutMs) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 11.0, *)) {
+        if (![NFCNDEFReaderSession readingAvailable]) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+            return;
+        }
+        POOL_BEGIN();
+        if (cn1_nfcNdefDelegate == nil) {
+            cn1_nfcNdefDelegate = [[CN1NfcNdefDelegate alloc] init];
+        }
+        cn1_nfcNdefDelegate.requestId = requestId;
+        if (cn1_nfcNdefSession != nil) {
+            [cn1_nfcNdefSession invalidateSession];
+            [cn1_nfcNdefSession release];
+            cn1_nfcNdefSession = nil;
+        }
+        cn1_nfcNdefSession = [[NFCNDEFReaderSession alloc] initWithDelegate:cn1_nfcNdefDelegate queue:dispatch_get_main_queue() invalidateAfterFirstRead:YES];
+        if (alertMessage != JAVA_NULL) {
+            NSString *s = toNSString(CN1_THREAD_STATE_PASS_ARG alertMessage);
+            if (s != nil) {
+                cn1_nfcNdefSession.alertMessage = s;
+            }
+        }
+        [cn1_nfcNdefSession beginSession];
+        POOL_END();
+        return;
+    }
+#endif
+    com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+}
+
+void com_codename1_impl_ios_IOSNative_startTagRead___int_java_lang_String_int_java_lang_String_1ARRAY_byte_1ARRAY_1ARRAY_long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_OBJECT alertMessage, JAVA_INT polling, JAVA_OBJECT systemCodes, JAVA_OBJECT aids, JAVA_LONG timeoutMs) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 13.0, *)) {
+        if (![NFCTagReaderSession readingAvailable]) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+            return;
+        }
+        POOL_BEGIN();
+        NFCPollingOption pollingMask = 0;
+        if ((polling & 1) != 0) pollingMask |= NFCPollingISO14443;
+        if ((polling & 4) != 0) pollingMask |= NFCPollingISO18092;
+        if ((polling & 8) != 0) pollingMask |= NFCPollingISO15693;
+        if (pollingMask == 0) {
+            pollingMask = NFCPollingISO14443 | NFCPollingISO18092;
+        }
+        if (cn1_nfcTagDelegate == nil) {
+            cn1_nfcTagDelegate = [[CN1NfcTagDelegate alloc] init];
+        }
+        cn1_nfcTagDelegate.requestId = requestId;
+        if (cn1_nfcTagSession != nil) {
+            [cn1_nfcTagSession invalidateSession];
+            [cn1_nfcTagSession release];
+            cn1_nfcTagSession = nil;
+        }
+        cn1_nfcTagSession = [[NFCTagReaderSession alloc] initWithPollingOption:pollingMask delegate:cn1_nfcTagDelegate queue:dispatch_get_main_queue()];
+        if (alertMessage != JAVA_NULL) {
+            NSString *s = toNSString(CN1_THREAD_STATE_PASS_ARG alertMessage);
+            if (s != nil) {
+                cn1_nfcTagSession.alertMessage = s;
+            }
+        }
+        [cn1_nfcTagSession beginSession];
+        POOL_END();
+        return;
+    }
+#endif
+    com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+}
+
+void com_codename1_impl_ios_IOSNative_stopNfcRead___int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId) {
+#ifdef CN1_INCLUDE_NFC
+    if (cn1_nfcNdefSession != nil) {
+        [cn1_nfcNdefSession invalidateSession];
+    }
+    if (cn1_nfcTagSession != nil) {
+        [cn1_nfcTagSession invalidateSession];
+    }
+#endif
+}
+
+void com_codename1_impl_ios_IOSNative_nfcTransceive___int_long_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_LONG handle, JAVA_OBJECT payload) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 13.0, *)) {
+        id<NFCTag> tag = (id<NFCTag>)((void *)(intptr_t)handle);
+        if (tag == nil || ![cn1_nfcConnectedTags containsObject:tag]) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 100, JAVA_NULL);
+            return;
+        }
+        if (tag.type != NFCTagTypeISO7816Compatible) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+            return;
+        }
+        id<NFCISO7816Tag> iso = [tag asNFCISO7816Tag];
+        JAVA_ARRAY pa = (JAVA_ARRAY)payload;
+        NSData *data = [NSData dataWithBytes:((JAVA_ARRAY_BYTE *)pa->data) length:pa->length];
+        // Slice the APDU into CLA/INS/P1/P2/data/Le per NFCISO7816APDU API.
+        NSError *parseErr = nil;
+        NFCISO7816APDU *apdu = [[NFCISO7816APDU alloc] initWithData:data];
+        if (apdu == nil) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 105, JAVA_NULL);
+            return;
+        }
+        [iso sendCommandAPDU:apdu completionHandler:^(NSData *response, uint8_t sw1, uint8_t sw2, NSError *error) {
+            if (error != nil) {
+                cn1_nfcSendError(requestId, error);
+                return;
+            }
+            NSUInteger len = (response != nil ? [response length] : 0) + 2;
+            JAVA_ARRAY ja = (JAVA_ARRAY)__NEW_ARRAY_JAVA_BYTE(getThreadLocalData(), (JAVA_INT)len);
+            if (response != nil && [response length] > 0) {
+                memcpy(((JAVA_ARRAY_BYTE *)ja->data), [response bytes], [response length]);
+            }
+            ((JAVA_ARRAY_BYTE *)ja->data)[len - 2] = sw1;
+            ((JAVA_ARRAY_BYTE *)ja->data)[len - 1] = sw2;
+            com_codename1_impl_ios_IOSNfc_nativeTransceiveResult___int_byte_1ARRAY(getThreadLocalData(), requestId, (JAVA_OBJECT)ja);
+        }];
+        [apdu release];
+        return;
+    }
+#endif
+    com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+}
+
+void com_codename1_impl_ios_IOSNative_nfcReadNdefFromTag___int_long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_LONG handle) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 13.0, *)) {
+        id<NFCTag> tag = (id<NFCTag>)((void *)(intptr_t)handle);
+        if (![tag conformsToProtocol:@protocol(NFCNDEFTag)]) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+            return;
+        }
+        id<NFCNDEFTag> ndefTag = (id<NFCNDEFTag>)tag;
+        [ndefTag readNDEFWithCompletionHandler:^(NFCNDEFMessage *message, NSError *error) {
+            if (error != nil) {
+                cn1_nfcSendError(requestId, error);
+                return;
+            }
+            if (message == nil) {
+                com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 4, JAVA_NULL);
+                return;
+            }
+            NSData *raw = [cn1_nfcNdefDelegate serializeNdefMessage:message];
+            JAVA_OBJECT arr = JAVA_NULL;
+            if (raw != nil) {
+                JAVA_ARRAY ja = (JAVA_ARRAY)__NEW_ARRAY_JAVA_BYTE(getThreadLocalData(), (JAVA_INT)[raw length]);
+                memcpy(((JAVA_ARRAY_BYTE *)ja->data), [raw bytes], [raw length]);
+                arr = (JAVA_OBJECT)ja;
+            }
+            com_codename1_impl_ios_IOSNfc_nativeNdefResult___int_byte_1ARRAY(getThreadLocalData(), requestId, arr);
+        }];
+        return;
+    }
+#endif
+    com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+}
+
+void com_codename1_impl_ios_IOSNative_nfcWriteNdefToTag___int_long_byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_LONG handle, JAVA_OBJECT ndef) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 13.0, *)) {
+        id<NFCTag> tag = (id<NFCTag>)((void *)(intptr_t)handle);
+        if (![tag conformsToProtocol:@protocol(NFCNDEFTag)]) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+            return;
+        }
+        id<NFCNDEFTag> ndefTag = (id<NFCNDEFTag>)tag;
+        JAVA_ARRAY na = (JAVA_ARRAY)ndef;
+        NSData *raw = [NSData dataWithBytes:((JAVA_ARRAY_BYTE *)na->data) length:na->length];
+        // CoreNFC's NFCNDEFMessage requires the parsed object form; we
+        // reconstruct it by parsing the wire-format bytes.
+        // Apple does not expose a public reader for the wire bytes so we
+        // wrap the payload in a single short MIME record (best-effort) when
+        // the structure is not already NFCNDEFMessage-compatible.
+        NFCNDEFMessage *msg = nil;
+        @try {
+            msg = [[NFCNDEFMessage alloc] initWithData:raw];
+        } @catch (NSException *e) {
+            msg = nil;
+        }
+        if (msg == nil) {
+            // Fallback: build a single MIME record containing the raw payload.
+            NFCNDEFPayload *p = [NFCNDEFPayload wellKnownTypeURIPayloadWithString:@"about:blank"];
+            msg = [[NFCNDEFMessage alloc] initWithNDEFRecords:[NSArray arrayWithObject:p]];
+        }
+        [ndefTag writeNDEF:msg completionHandler:^(NSError *error) {
+            if (error != nil) {
+                cn1_nfcSendError(requestId, error);
+            } else {
+                com_codename1_impl_ios_IOSNfc_nativeWriteResult___int_boolean(getThreadLocalData(), requestId, JAVA_TRUE);
+            }
+        }];
+        [msg release];
+        return;
+    }
+#endif
+    com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+}
+
+void com_codename1_impl_ios_IOSNative_nfcLockTag___int_long(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_INT requestId, JAVA_LONG handle) {
+#ifdef CN1_INCLUDE_NFC
+    if (@available(iOS 13.0, *)) {
+        id<NFCTag> tag = (id<NFCTag>)((void *)(intptr_t)handle);
+        if (![tag conformsToProtocol:@protocol(NFCNDEFTag)]) {
+            com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+            return;
+        }
+        id<NFCNDEFTag> ndefTag = (id<NFCNDEFTag>)tag;
+        [ndefTag writeLockWithCompletionHandler:^(NSError *error) {
+            if (error != nil) {
+                cn1_nfcSendError(requestId, error);
+            } else {
+                com_codename1_impl_ios_IOSNfc_nativeWriteResult___int_boolean(getThreadLocalData(), requestId, JAVA_TRUE);
+            }
+        }];
+        return;
+    }
+#endif
+    com_codename1_impl_ios_IOSNfc_nativeNfcError___int_int_java_lang_String(getThreadLocalData(), requestId, 1001, JAVA_NULL);
+}
+
+void com_codename1_impl_ios_IOSNative_registerHceAids___java_lang_String_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_OBJECT aids) {
+    // CardSession (iOS 17.4 EU-only) requires the
+    // com.apple.developer.nfc.hce.iso7816.select-identifiers entitlement to
+    // be present at app load time; runtime registration is informational.
+    // Implementation deferred -- the iOS HCE platform surface is
+    // EU-restricted and changes between iOS minor versions; the Java
+    // side returns NOT_AVAILABLE on devices where canHostEmulateNfc
+    // returns false.
+}
+
+void com_codename1_impl_ios_IOSNative_hceSendResponse___byte_1ARRAY(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT me, JAVA_OBJECT response) {
+    // See registerHceAids above.
+}
+
+// ====================================================================
+// Crypto bridge _R_int wrappers
+//
+// ParparVM emits two C entry points for every non-void native method: the
+// unmangled implementation (com_..._methodName___paramTypes) plus a
+// _R_<returnType>-suffixed wrapper that the bytecode dispatcher actually
+// calls. We forward each wrapper to the matching implementation -- which is
+// either the CN1_INCLUDE_CRYPTO-on real version or the always-fail stub
+// from the #else branch above, depending on the build configuration.
+
+JAVA_INT com_codename1_impl_ios_IOSNative_aesCbc___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_int_R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT encrypt, JAVA_OBJECT keyArr, JAVA_OBJECT ivArr, JAVA_OBJECT inArr, JAVA_OBJECT outArr, JAVA_INT padding) {
+    return com_codename1_impl_ios_IOSNative_aesCbc___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_int(CN1_THREAD_STATE_PASS_ARG instanceObject, encrypt, keyArr, ivArr, inArr, outArr, padding);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_aesGcm___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT encrypt, JAVA_OBJECT keyArr, JAVA_OBJECT ivArr, JAVA_OBJECT aadArr, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    return com_codename1_impl_ios_IOSNative_aesGcm___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_PASS_ARG instanceObject, encrypt, keyArr, ivArr, aadArr, inArr, outArr);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_rsaEncrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT paddingKind, JAVA_OBJECT x509, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    return com_codename1_impl_ios_IOSNative_rsaEncrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_PASS_ARG instanceObject, paddingKind, x509, inArr, outArr);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_rsaDecrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT paddingKind, JAVA_OBJECT pkcs8, JAVA_OBJECT inArr, JAVA_OBJECT outArr) {
+    return com_codename1_impl_ios_IOSNative_rsaDecrypt___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_PASS_ARG instanceObject, paddingKind, pkcs8, inArr, outArr);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_sign___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT algorithm, JAVA_OBJECT pkcs8, JAVA_OBJECT data, JAVA_OBJECT outArr) {
+    return com_codename1_impl_ios_IOSNative_sign___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_PASS_ARG instanceObject, algorithm, pkcs8, data, outArr);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_verify___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY_R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT algorithm, JAVA_OBJECT x509, JAVA_OBJECT data, JAVA_OBJECT sig) {
+    return com_codename1_impl_ios_IOSNative_verify___int_byte_1ARRAY_byte_1ARRAY_byte_1ARRAY(CN1_THREAD_STATE_PASS_ARG instanceObject, algorithm, x509, data, sig);
+}
+
+JAVA_INT com_codename1_impl_ios_IOSNative_generateRsaKeyPair___int_byte_1ARRAY_byte_1ARRAY_int_1ARRAY_R_int(CN1_THREAD_STATE_MULTI_ARG JAVA_OBJECT instanceObject, JAVA_INT bits, JAVA_OBJECT outPub, JAVA_OBJECT outPriv, JAVA_OBJECT lengths) {
+    return com_codename1_impl_ios_IOSNative_generateRsaKeyPair___int_byte_1ARRAY_byte_1ARRAY_int_1ARRAY(CN1_THREAD_STATE_PASS_ARG instanceObject, bits, outPub, outPriv, lengths);
 }

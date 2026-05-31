@@ -17,6 +17,13 @@ HUGO_BIN="${HUGO_BIN:-hugo}"
 HUGO_ENVIRONMENT="${HUGO_ENVIRONMENT:-production}"
 HUGO_MINIFY="${HUGO_MINIFY:-true}"
 HUGO_BASEURL="${HUGO_BASEURL:-https://www.codenameone.com/}"
+# When true, include posts whose front-matter date is in the future
+# (e.g. weekly release posts staged for later in the week). Off by
+# default so the live site only shows posts whose publish date has
+# arrived; PR previews flip this on so reviewers can read the draft.
+HUGO_BUILD_FUTURE="${HUGO_BUILD_FUTURE:-false}"
+# When true, include posts marked draft: true.
+HUGO_BUILD_DRAFTS="${HUGO_BUILD_DRAFTS:-false}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 WEBSITE_INCLUDE_JAVADOCS="${WEBSITE_INCLUDE_JAVADOCS:-false}"
 WEBSITE_INCLUDE_DEVGUIDE="${WEBSITE_INCLUDE_DEVGUIDE:-auto}"
@@ -35,15 +42,6 @@ if [ "${WEBSITE_INCLUDE_INITIALIZR}" = "auto" ]; then
     WEBSITE_INCLUDE_INITIALIZR="false"
   fi
 fi
-
-ensure_native_themes() {
-  if [ -f "${REPO_ROOT}/Themes/iOSModernTheme.res" ] \
-      && [ -f "${REPO_ROOT}/Themes/AndroidMaterialTheme.res" ]; then
-    return
-  fi
-  echo "Generating native theme .res files via build-native-themes.sh..." >&2
-  bash "${REPO_ROOT}/scripts/build-native-themes.sh"
-}
 
 bootstrap_local_cn1_snapshots() {
   if [ "${WEBSITE_BOOTSTRAP_CN1_SNAPSHOTS}" != "true" ]; then
@@ -571,12 +569,6 @@ build_initializr_for_site() {
     return
   fi
 
-  # The initializr's live preview overlays the iOS Modern theme, which is
-  # bundled from the gitignored Themes/iOSModernTheme.res. Generate it now
-  # so the antrun copy in scripts/initializr/common/pom.xml has something
-  # to pick up.
-  ensure_native_themes
-
   echo "Building Initializr JavaScript bundle for website..." >&2
   (
     cd "${REPO_ROOT}/scripts/initializr"
@@ -637,12 +629,6 @@ build_playground_for_site() {
   fi
 
   bootstrap_local_cn1_snapshots
-
-  # The playground's live preview switches between iOS Modern and Android
-  # Material via Resources.openLayered. Both .res files are gitignored
-  # build artifacts; generate them now so the antrun copy in
-  # scripts/cn1playground/common/pom.xml has something to pick up.
-  ensure_native_themes
 
   echo "Building Playground JavaScript bundle for website..." >&2
   (
@@ -786,11 +772,23 @@ if [ "${HUGO_MINIFY}" = "true" ]; then
   MINIFY_FLAG="--minify"
 fi
 
+BUILD_FUTURE_FLAG=""
+if [ "${HUGO_BUILD_FUTURE}" = "true" ]; then
+  BUILD_FUTURE_FLAG="--buildFuture"
+fi
+
+BUILD_DRAFTS_FLAG=""
+if [ "${HUGO_BUILD_DRAFTS}" = "true" ]; then
+  BUILD_DRAFTS_FLAG="--buildDrafts"
+fi
+
 HUGO_ENV="${HUGO_ENVIRONMENT}" "${HUGO_BIN}" \
   --cleanDestinationDir \
   --gc \
   --baseURL "${HUGO_BASEURL}" \
-  ${MINIFY_FLAG}
+  ${MINIFY_FLAG} \
+  ${BUILD_FUTURE_FLAG} \
+  ${BUILD_DRAFTS_FLAG}
 
 if command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   "${PYTHON_BIN}" "${WEBSITE_DIR}/scripts/generate_lunr_index.py"

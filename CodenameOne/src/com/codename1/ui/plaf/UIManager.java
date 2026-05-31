@@ -1570,7 +1570,7 @@ public class UIManager {
     /// styles, but components already shown on a form continue to render
     /// with the Font instances they captured before the call. To apply the
     /// new sizes to a live form, invoke `refreshTheme()` on it (typically
-    /// `Form.getCurrentForm().refreshTheme()`) after calling this method.
+    /// `CN.getCurrentForm().refreshTheme()`) after calling this method.
     ///
     /// #### Parameters
     ///
@@ -2410,6 +2410,26 @@ public class UIManager {
                     backgroundGradient[4] = Float.valueOf(1);
                 }
                 style.setBackgroundGradient(backgroundGradient);
+            }
+            Object gradient = themeProps.get(id + Style.GRADIENT);
+            if (gradient instanceof com.codename1.ui.Gradient) {
+                style.setGradient((com.codename1.ui.Gradient) gradient);
+            }
+            Object filterBlur = themeProps.get(id + Style.FILTER_BLUR);
+            if (filterBlur instanceof Number) {
+                style.setFilterBlurRadius(((Number) filterBlur).floatValue());
+            }
+            Object backdropFilterBlur = themeProps.get(id + Style.BACKDROP_FILTER_BLUR);
+            if (backdropFilterBlur instanceof Number) {
+                style.setBackdropFilterBlurRadius(((Number) backdropFilterBlur).floatValue());
+            }
+            Object filterMatrix = themeProps.get(id + Style.FILTER_COLOR_MATRIX);
+            if (filterMatrix instanceof float[]) {
+                style.setFilterColorMatrix((float[]) filterMatrix);
+            }
+            Object backdropFilterMatrix = themeProps.get(id + Style.BACKDROP_FILTER_COLOR_MATRIX);
+            if (backdropFilterMatrix instanceof float[]) {
+                style.setBackdropFilterColorMatrix((float[]) backdropFilterMatrix);
             }
             if (bgImage != null) {
                 Image im = null;

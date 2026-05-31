@@ -625,9 +625,28 @@ APP_PROCESS_NAME="${WRAPPER_NAME%.app}"
 
   LAUNCH_LOG="$ARTIFACTS_DIR/simctl-launch.log"
 
+  # Thread Metal validation env vars (if set in the caller's environment)
+  # through to the launched app. simctl on Xcode 26 does NOT take a
+  # --setenv flag (`xcrun simctl help launch` confirms); the documented
+  # mechanism is exporting SIMCTL_CHILD_<NAME>=<value> in the shell that
+  # invokes simctl, which the launch helper unwraps into <NAME>=<value>
+  # for the child. CI's Metal job sets MTL_DEBUG_LAYER /
+  # MTL_DEBUG_LAYER_ERROR_MODE at the step level so iOS render-pass /
+  # pipeline-state mismatches (issue #5103) abort the app immediately
+  # instead of producing undefined behaviour off-CI.
+  if [ -n "${MTL_DEBUG_LAYER:-}" ]; then
+    export SIMCTL_CHILD_MTL_DEBUG_LAYER="${MTL_DEBUG_LAYER}"
+    ri_log "Forwarding MTL_DEBUG_LAYER=${MTL_DEBUG_LAYER} to simulator app (via SIMCTL_CHILD_)"
+  fi
+  if [ -n "${MTL_DEBUG_LAYER_ERROR_MODE:-}" ]; then
+    export SIMCTL_CHILD_MTL_DEBUG_LAYER_ERROR_MODE="${MTL_DEBUG_LAYER_ERROR_MODE}"
+    ri_log "Forwarding MTL_DEBUG_LAYER_ERROR_MODE=${MTL_DEBUG_LAYER_ERROR_MODE} to simulator app (via SIMCTL_CHILD_)"
+  fi
+
   launch_simulator_app() {
     local target="$1"
     local attempt=1
+    local max_attempts=5
     while true; do
       local output
       if output="$(xcrun simctl launch "$target" "$BUNDLE_IDENTIFIER" 2>&1)"; then
@@ -635,12 +654,25 @@ APP_PROCESS_NAME="${WRAPPER_NAME%.app}"
         return 0
       fi
       printf '%s\n' "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] simctl launch failed (attempt $attempt): $output" >> "$LAUNCH_LOG"
-      if [ "$attempt" -ge 2 ]; then
+      if [ "$attempt" -ge "$max_attempts" ]; then
         return 1
       fi
       ri_log "simctl launch failed (attempt $attempt), retrying"
+      # "Application unknown to FrontBoard" is a classic Xcode 26 Simulator
+      # registration race: simctl install reports success before FrontBoard's
+      # app database has caught up. The standard workaround is to bounce
+      # FrontBoard via launchctl - this forces a rescan. If that fails, we
+      # fall back to reinstalling the .app bundle so the registration kicks
+      # off again. Both are no-ops on the success path.
+      if printf '%s' "$output" | grep -q "unknown to FrontBoard"; then
+        ri_log "FrontBoard could not locate $BUNDLE_IDENTIFIER; bouncing FrontBoard + reinstalling app"
+        xcrun simctl spawn "$target" launchctl kickstart -k system/com.apple.FrontBoard.systemappservices >/dev/null 2>&1 || true
+        xcrun simctl uninstall "$target" "$BUNDLE_IDENTIFIER" >/dev/null 2>&1 || true
+        sleep 2
+        xcrun simctl install "$target" "$APP_BUNDLE_PATH" >/dev/null 2>&1 || true
+      fi
       xcrun simctl bootstatus "$target" -b >/dev/null 2>&1 || true
-      sleep 5
+      sleep $((attempt * 5))
       attempt=$((attempt + 1))
     done
   }
@@ -883,29 +915,19 @@ if [ -n "$BASE64_BENCHMARK_FAILURE_LINE" ]; then
   exit 16
 fi
 
-# Guard: the suite must produce at least this many screenshots. A bug in
-# the rendering pipeline (e.g. a hang during one test) used to surface as
-# "Compared 1 screenshot" -- the suite would silently exit early after
-# SIGTERM and we'd accept the run as green. The threshold is intentionally
-# below the current suite size (~37 graphics tests) to allow legitimate
-# additions/removals; raise it deliberately when adding tests.
-MIN_SCREENSHOTS="${CN1SS_MIN_SCREENSHOTS:-30}"
-if [ -s "$COMPARE_JSON" ]; then
-  ACTUAL_COUNT="$(python3 -c "import json,sys
-try:
-    with open(sys.argv[1]) as f:
-        d = json.load(f)
-    print(len(d.get('results', [])))
-except Exception as e:
-    print(0)" "$COMPARE_JSON" 2>/dev/null || echo 0)"
-else
-  ACTUAL_COUNT=0
+# Screenshot mismatch / count-regression guards are centralised in
+# cn1ss_process_and_report (scripts/lib/cn1ss.sh), which returns these
+# codes only when CN1SS_FAIL_ON_MISMATCH=1:
+#   15 - a screenshot differs from / errored against its stored baseline
+#   17 - fewer screenshots were produced than there are stored references
+#        (a test failed to emit; the suite most likely hung or crashed
+#        partway, dropping every screenshot after the failure - the exact
+#        symptom behind the Metal suite silently reporting 107/122).
+# The count floor is the size of $SCREENSHOT_REF_DIR, optionally raised via
+# CN1SS_MIN_SCREENSHOTS. comment_rc already carries those codes, so simply
+# surface it (after the benchmark guard above) as this script's exit status.
+if [ "${comment_rc:-0}" -eq 15 ] || [ "${comment_rc:-0}" -eq 17 ]; then
+  ri_log "STAGE:SCREENSHOT_REGRESSION -> failing with exit ${comment_rc} (see cn1ss FATAL message above)."
 fi
-if [ "$ACTUAL_COUNT" -lt "$MIN_SCREENSHOTS" ]; then
-  ri_log "STAGE:SCREENSHOT_COUNT_REGRESSION -> got $ACTUAL_COUNT, expected >= $MIN_SCREENSHOTS"
-  ri_log "Suite likely hung or crashed early; check device-runner.log for SIGTERM and the last CN1SS:METAL_DIAG / CN1SS:INFO:suite entries."
-  exit 17
-fi
-ri_log "Screenshot count check passed: $ACTUAL_COUNT >= $MIN_SCREENSHOTS"
 
 exit $comment_rc

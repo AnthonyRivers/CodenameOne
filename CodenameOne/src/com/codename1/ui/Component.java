@@ -3001,13 +3001,23 @@ public class Component implements Animation, StyleListener, Editable {
             int scrollX = getScrollX();
             int scrollY = getScrollY();
             g.translate(-scrollX, -scrollY);
-            paint(g);
+            Display.impl.beginPaintScope(g.getGraphics(), this);
+            try {
+                paint(g);
+            } finally {
+                Display.impl.endPaintScope(g.getGraphics(), this);
+            }
             g.translate(scrollX, scrollY);
             if (isScrollVisible) {
                 paintScrollbars(g);
             }
         } else {
-            paint(g);
+            Display.impl.beginPaintScope(g.getGraphics(), this);
+            try {
+                paint(g);
+            } finally {
+                Display.impl.endPaintScope(g.getGraphics(), this);
+            }
         }
         if (isBorderPainted()) {
             paintBorder(g);
@@ -3395,9 +3405,19 @@ public class Component implements Animation, StyleListener, Editable {
                 rect.getSize().setWidth(par.getWidth());
                 rect.getSize().setHeight(par.getHeight());
             }
-            p.paint(g, rect);
+            Display.impl.beginPaintScope(g.getGraphics(), p);
+            try {
+                p.paint(g, rect);
+            } finally {
+                Display.impl.endPaintScope(g.getGraphics(), p);
+            }
         }
-        par.paintBackground(g);
+        Display.impl.beginPaintScope(g.getGraphics(), par);
+        try {
+            par.paintBackground(g);
+        } finally {
+            Display.impl.endPaintScope(g.getGraphics(), par);
+        }
         ((Container) par).paintIntersecting(g, c, x, y, w, h, false, 0);
         g.translate(-transX, -transY);
     }
@@ -3469,9 +3489,20 @@ public class Component implements Animation, StyleListener, Editable {
             }
         }
         if (getStyle().getBgPainter() != null) {
-            getStyle().getBgPainter().paint(g, bounds);
+            Painter bp = getStyle().getBgPainter();
+            Display.impl.beginPaintScope(g.getGraphics(), bp);
+            try {
+                bp.paint(g, bounds);
+            } finally {
+                Display.impl.endPaintScope(g.getGraphics(), bp);
+            }
         }
-        paintBackground(g);
+        Display.impl.beginPaintScope(g.getGraphics(), this);
+        try {
+            paintBackground(g);
+        } finally {
+            Display.impl.endPaintScope(g.getGraphics(), this);
+        }
         paintRippleEffect(g);
     }
 
@@ -3808,7 +3839,21 @@ public class Component implements Animation, StyleListener, Editable {
                 if (hideInLandscape && !Display.INSTANCE.isPortrait()) {
                     preferredSize = new Dimension(0, 0);
                 } else {
-                    preferredSize = calcPreferredSize();
+                    // Copy values rather than retain the reference returned by
+                    // calcPreferredSize(). Otherwise, subclasses whose
+                    // calcPreferredSize() returns a shared Dimension (e.g.
+                    // ContainerList.Entry returning the renderer's own
+                    // preferredSize field) cause every "cached" preferredSize
+                    // to point at the same instance, so a single re-measure of
+                    // the renderer silently mutates every previously-measured
+                    // entry. See #1363.
+                    Dimension calculated = calcPreferredSize();
+                    if (preferredSize == null) {
+                        preferredSize = new Dimension(calculated.getWidth(), calculated.getHeight());
+                    } else {
+                        preferredSize.setWidth(calculated.getWidth());
+                        preferredSize.setHeight(calculated.getHeight());
+                    }
                     if (preferredSizeStr != null) {
                         Component.parsePreferredSize(preferredSizeStr, preferredSize);
                     }
@@ -5086,7 +5131,12 @@ public class Component implements Animation, StyleListener, Editable {
 
         g.translate(-getX(), -getY());
         paintComponentBackground(g);
-        paint(g);
+        Display.impl.beginPaintScope(g.getGraphics(), this);
+        try {
+            paint(g);
+        } finally {
+            Display.impl.endPaintScope(g.getGraphics(), this);
+        }
         if (isBorderPainted()) {
             paintBorder(g);
         }
@@ -5132,7 +5182,12 @@ public class Component implements Animation, StyleListener, Editable {
 
         g.translate(-getX(), -getY());
         paintComponentBackground(g);
-        paint(g);
+        Display.impl.beginPaintScope(g.getGraphics(), this);
+        try {
+            paint(g);
+        } finally {
+            Display.impl.endPaintScope(g.getGraphics(), this);
+        }
         if (isBorderPainted()) {
             paintBorder(g);
         }
@@ -5262,6 +5317,17 @@ public class Component implements Animation, StyleListener, Editable {
     ///
     /// - `task`: the refresh task to execute.
     public void addPullToRefresh(Runnable task) {
+        this.refreshTask = task;
+    }
+
+    /// Alias for `#addPullToRefresh(Runnable)` -- both names point at the
+    /// same single-task slot, and a second call replaces the
+    /// previously-registered runnable.
+    ///
+    /// #### Parameters
+    ///
+    /// - `task`: the refresh task to execute, or `null` to clear.
+    public void setPullToRefresh(Runnable task) {
         this.refreshTask = task;
     }
 
@@ -7000,7 +7066,7 @@ public class Component implements Animation, StyleListener, Editable {
 
         Painter bgp = getStyle().getBgPainter();
         boolean animateBackgroundB = bgp != null &&
-                bgp.getClass() != BGPainter.class &&
+                !(bgp instanceof BGPainter) &&
                 bgp instanceof Animation &&
                 ((Animation) bgp).animate();
         animateBackground = animateBackgroundB || animateBackground;
@@ -8156,6 +8222,15 @@ public class Component implements Animation, StyleListener, Editable {
     /// the alwaysTensile
     public boolean isAlwaysTensile() {
         return alwaysTensile && !isScrollableX() || (refreshTask != null && !InfiniteProgress.isDefaultMaterialDesignMode());
+    }
+
+    /// Raw view of the {@code alwaysTensile} flag, without the
+    /// {@link #isAlwaysTensile()} dependency on {@link #isScrollableX()}.
+    /// Used by {@link Container#isScrollableX()} so the X axis can honour
+    /// {@code setAlwaysTensile(true)} (matching {@link Container#isScrollableY()})
+    /// without recursing through {@code isAlwaysTensile()} -> {@code isScrollableX()}.
+    boolean alwaysTensileFlag() {
+        return alwaysTensile;
     }
 
     /// Enable the tensile drag to work even when a component doesn't have a scroll showable (scrollable flag still needs to be set to true)

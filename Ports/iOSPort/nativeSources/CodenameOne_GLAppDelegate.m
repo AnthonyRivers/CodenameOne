@@ -119,10 +119,22 @@ static void installSignalHandlers() {
 - (CodenameOne_GLViewController *)cn1EnsureViewController
 {
     if (self.viewController == nil) {
-#ifdef CN1_USE_ARC
-        self.viewController = [[CodenameOne_GLViewController alloc] initWithNibName:@"CodenameOne_GLViewController" bundle:nil];
+        // The iOS XIB-based instantiation breaks under Mac Catalyst on
+        // Xcode 26: IBAgent-macOS-UIKit crashes compiling the GL/Metal
+        // view-controller XIBs, so the file is excluded from the Mac
+        // slice via EXCLUDED_SOURCE_FILE_NAMES[sdk=macosx*]. Pass nil as
+        // the NIB name on Mac so UIViewController synthesises a plain
+        // UIView; the Metal layer is attached programmatically further
+        // down the init chain, so the XIB's IBOutlet wiring isn't needed.
+#if TARGET_OS_MACCATALYST
+        NSString *cn1NibName = nil;
 #else
-        CodenameOne_GLViewController *viewController = [[CodenameOne_GLViewController alloc] initWithNibName:@"CodenameOne_GLViewController" bundle:nil];
+        NSString *cn1NibName = @"CodenameOne_GLViewController";
+#endif
+#ifdef CN1_USE_ARC
+        self.viewController = [[CodenameOne_GLViewController alloc] initWithNibName:cn1NibName bundle:nil];
+#else
+        CodenameOne_GLViewController *viewController = [[CodenameOne_GLViewController alloc] initWithNibName:cn1NibName bundle:nil];
         self.viewController = viewController;
         [viewController release];
 #endif
@@ -216,7 +228,12 @@ static void installSignalHandlers() {
 - (void)cn1ApplicationDidEnterBackground
 {
  #ifdef CN1_BLOCK_SCREENSHOTS_ON_ENTER_BACKGROUND
-    [[CodenameOne_GLViewController instance] eaglView].hidden = YES;
+    // Hide the view controller's root view rather than just the EAGL/Metal
+    // surface. Once a peer component is added with paintPeersBehindEnabled,
+    // the controller's view is a newRoot containing both eaglView and the
+    // peerComponentsLayer (BrowserComponent's WKWebView lives in the latter)
+    // -- hiding only eaglView leaves peers visible in the app-switcher snapshot.
+    [CodenameOne_GLViewController instance].view.hidden = YES;
     cn1IsHiddenInBackground = YES;
 #endif
     if(editingComponent != nil) {
@@ -239,7 +256,7 @@ static void installSignalHandlers() {
 - (void)cn1ApplicationWillEnterForeground
 {
     if (cn1IsHiddenInBackground) {
-        [[CodenameOne_GLViewController instance] eaglView].hidden = NO;
+        [CodenameOne_GLViewController instance].view.hidden = NO;
     }
     // Clear before updateCanvas: viewWillTransitionToSize: and
     // didRotateFromInterfaceOrientation: use this to skip propagation during
@@ -322,9 +339,17 @@ static void installSignalHandlers() {
     
     // Override point for customization after application launch.
     
-    // Install signal handlers so that rather than the app crashing upon a BAD_ACCESS, the 
+    // Install signal handlers so that rather than the app crashing upon a BAD_ACCESS, the
     // app will throw an NPE.
     installSignalHandlers();
+#ifdef CN1_ON_DEVICE_DEBUG
+    // Spawn the on-device-debug listener thread. Non-blocking: if
+    // CN1ProxyWaitForAttach=YES the function also installs a translucent
+    // overlay UIWindow so the user sees a "Waiting for debugger..." message
+    // instead of the launch splash while the wait is in progress.
+    extern void cn1_debugger_start(void);
+    cn1_debugger_start();
+#endif
     [self cn1EnsureViewController];
 #ifndef CN1_USE_UI_SCENE
     [self cn1InstallRootViewControllerIntoWindow:self.window];
@@ -341,12 +366,26 @@ static void installSignalHandlers() {
             }
         }
     }
+#ifdef CN1_ON_DEVICE_DEBUG
+    // Defer the VM callback until the on-device-debug proxy reports an IDE
+    // has attached (if CN1ProxyWaitForAttach=YES). Otherwise this fires
+    // synchronously and behaves identically to the non-debug build.
+    extern void cn1_debugger_run_when_ready(void (^onReady)(void));
+    id locationValueDeferred = [launchOptions objectForKey:UIApplicationLaunchOptionsLocationKey];
+    cn1_debugger_run_when_ready(^{
+        com_codename1_impl_ios_IOSImplementation_callback__(CN1_THREAD_GET_STATE_PASS_SINGLE_ARG);
+        if (locationValueDeferred) {
+            com_codename1_impl_ios_IOSImplementation_appDidLaunchWithLocation__(CN1_THREAD_GET_STATE_PASS_SINGLE_ARG);
+        }
+    });
+#else
     com_codename1_impl_ios_IOSImplementation_callback__(CN1_THREAD_GET_STATE_PASS_SINGLE_ARG);
-    
+
     id locationValue = [launchOptions objectForKey:UIApplicationLaunchOptionsLocationKey];
     if (locationValue) {
         com_codename1_impl_ios_IOSImplementation_appDidLaunchWithLocation__(CN1_THREAD_GET_STATE_PASS_SINGLE_ARG);
     }
+#endif
     
 #ifdef INCLUDE_CN1_BACKGROUND_FETCH
     [application setMinimumBackgroundFetchInterval:UIApplicationBackgroundFetchIntervalMinimum];

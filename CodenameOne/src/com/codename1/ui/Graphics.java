@@ -401,6 +401,52 @@ public final class Graphics {
         return impl.getClipHeight(nativeGraphics);
     }
 
+    /// Returns true if the given rectangle (in the current Graphics coordinate
+    /// space, with the active translation applied) intersects the current clip
+    /// rectangle, i.e. anything drawn into it would be at least partially
+    /// visible.
+    ///
+    /// Use this to skip work for off-screen draws - typical case is a zoomed
+    /// canvas where most images fall outside the visible window and should
+    /// not be decoded or scaled.
+    ///
+    /// ```java
+    /// if (g.isVisible(x, y, w, h)) {
+    ///     g.drawImage(image, x, y, w, h);
+    /// }
+    /// ```
+    ///
+    /// Note: shape-clipped graphics ([#setClip(Shape)]) and arbitrary
+    /// affine transforms fall back to the bounding rectangle of the clip;
+    /// this matches the precision actually used by the platform draw calls.
+    ///
+    /// #### Parameters
+    ///
+    /// - `x`: left edge of the rectangle
+    ///
+    /// - `y`: top edge of the rectangle
+    ///
+    /// - `w`: width of the rectangle
+    ///
+    /// - `h`: height of the rectangle
+    ///
+    /// #### Returns
+    ///
+    /// true if the rectangle intersects the current clip
+    public boolean isVisible(int x, int y, int w, int h) {
+        if (w <= 0 || h <= 0) {
+            return false;
+        }
+        int cx = getClipX();
+        int cy = getClipY();
+        int cw = getClipWidth();
+        int ch = getClipHeight();
+        if (cw <= 0 || ch <= 0) {
+            return false;
+        }
+        return x < cx + cw && y < cy + ch && x + w > cx && y + h > cy;
+    }
+
     /// Clips the given rectangle by intersecting with the current clipping region, this
     /// method can thus only shrink the clipping region and never increase it.
     ///
@@ -1359,6 +1405,39 @@ public final class Graphics {
             return;
         }
         impl.fillLinearGradient(nativeGraphics, startColor, endColor, x + xTranslate, y + yTranslate, width, height, horizontal);
+    }
+
+    /// Fills the rectangle (x, y, width, height) with the given multi-stop
+    /// gradient. The Gradient may be a `LinearGradient`, `RadialGradient`, or
+    /// `ConicGradient` - the port picks the right native shader path
+    /// (Java2D `LinearGradientPaint`/`RadialGradientPaint` on JavaSE; Android
+    /// `LinearGradient`/`RadialGradient`/`SweepGradient` shaders; software
+    /// rasterizer fallback elsewhere). Pass null or width/height <= 0 for a no-op.
+    public void fillGradient(Gradient gradient, int x, int y, int width, int height) {
+        if (gradient == null || width <= 0 || height <= 0) {
+            return;
+        }
+        impl.fillGradient(nativeGraphics, gradient, x + xTranslate, y + yTranslate, width, height);
+    }
+
+    /// Returns a copy of the given image with a Gaussian blur of the given radius
+    /// applied. Equivalent to the CSS filter:blur() effect on an image.
+    public Image gaussianBlur(Image source, float radius) {
+        if (source == null || radius <= 0f) {
+            return source;
+        }
+        return impl.gaussianBlurImage(source, radius);
+    }
+
+    /// Applies a Gaussian blur to the contents already painted into the
+    /// rectangular region. Used to realize CSS backdrop-filter:blur().
+    /// Returns true if the port supports an in-place blur; otherwise the
+    /// caller should fall back to snapshot + gaussianBlur().
+    public boolean blurRegion(int x, int y, int width, int height, float radius) {
+        if (width <= 0 || height <= 0 || radius <= 0f) {
+            return true;
+        }
+        return impl.blurRegion(nativeGraphics, x + xTranslate, y + yTranslate, width, height, radius);
     }
 
     /// Fills a rectangle with an optionally translucent fill color

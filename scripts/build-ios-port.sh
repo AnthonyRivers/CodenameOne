@@ -37,13 +37,19 @@ if [ ! -f "$BUILD_CLIENT" ]; then
   fi
 fi
 
-# Compile native CSS themes (iOSModernTheme.res) and copy into the iOS port's
-# native sources so the Maven iOS build packages them into nativeios.jar. The
-# iOS runtime falls back to iOS7Theme.res when iOSModernTheme.res is missing,
-# which loses all $DarkUIID entries (dark mode appears broken) and the liquid-
-# glass styling — so make sure this runs before the port is built.
-./scripts/build-native-themes.sh
-mkdir -p Ports/iOSPort/nativeSources
-cp Themes/iOSModernTheme.res Ports/iOSPort/nativeSources/iOSModernTheme.res
+# maven/ios/pom.xml pulls Themes/iOSModernTheme.res directly into nativeios.jar,
+# so no pre-staging copy under Ports/iOSPort/nativeSources/ is needed. The .res
+# is committed under Themes/ and kept in sync by
+# .github/workflows/native-themes-sync.yml. For local iteration on
+# native-themes/ios-modern/theme.css, run scripts/build-native-themes.sh.
 
+# Rebuild the `designer` module first so changes under maven/css-compiler/
+# are picked up by the maven plugin's CSS compile step. The designer module's
+# jar-with-dependencies embeds css-compiler classes (CSSTheme etc.); without
+# this install, a cached ~/.m2/repository restores the previous build's
+# designer.jar even when CSSTheme.java has changed and new gradient/filter
+# parsing silently misses the app's theme.res. Done as a separate invocation
+# (with -Plocal-dev-javase) because `designer` -> `javase-svg` -> `javase`,
+# and the javase port only resolves its CEF dependency under that profile.
+"$MAVEN_HOME/bin/mvn" -q -f maven/pom.xml -pl designer -am -Plocal-dev-javase -DskipTests -Djava.awt.headless=true install
 "$MAVEN_HOME/bin/mvn" -q -f maven/pom.xml -pl ios -am -Djava.awt.headless=true clean install "$@"

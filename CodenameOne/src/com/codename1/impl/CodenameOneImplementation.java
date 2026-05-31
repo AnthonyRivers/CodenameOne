@@ -37,9 +37,14 @@ import com.codename1.io.Cookie;
 import com.codename1.io.FileSystemStorage;
 import com.codename1.io.Log;
 import com.codename1.io.NetworkManager;
+import com.codename1.io.NetworkTypePlatform;
 import com.codename1.io.Preferences;
 import com.codename1.io.Storage;
 import com.codename1.io.Util;
+import com.codename1.io.bonjour.BonjourPlatform;
+import com.codename1.io.usb.UsbPlatform;
+import com.codename1.io.wifi.WifiDirectPlatform;
+import com.codename1.io.wifi.WifiPlatform;
 import com.codename1.io.tar.TarEntry;
 import com.codename1.io.tar.TarInputStream;
 import com.codename1.l10n.L10NManager;
@@ -48,9 +53,13 @@ import com.codename1.media.Media;
 import com.codename1.media.MediaRecorderBuilder;
 import com.codename1.messaging.Message;
 import com.codename1.notifications.LocalNotification;
+import com.codename1.share.ShareResult;
+import com.codename1.share.ShareResultListener;
 import com.codename1.payment.Purchase;
 import com.codename1.payment.PurchaseCallback;
 import com.codename1.push.PushCallback;
+import com.codename1.security.Biometrics;
+import com.codename1.security.SecureStorage;
 import com.codename1.ui.BrowserComponent;
 import com.codename1.ui.BrowserWindow;
 import com.codename1.ui.Button;
@@ -81,6 +90,7 @@ import com.codename1.ui.geom.Dimension;
 import com.codename1.ui.geom.Rectangle;
 import com.codename1.ui.geom.Shape;
 import com.codename1.ui.layouts.BorderLayout;
+import com.codename1.ui.Gradient;
 import com.codename1.ui.plaf.Style;
 import com.codename1.ui.util.ImageIO;
 import com.codename1.util.AsyncResource;
@@ -1517,6 +1527,63 @@ public abstract class CodenameOneImplementation {
         return false;
     }
 
+    // -----------------------------------------------------------------
+    // Speech recognition + Text-to-speech hooks
+    //
+    // Default to no-op so existing platform ports compile unchanged.
+    // iOS / Android / JavaSE override these in their own impl classes.
+    // -----------------------------------------------------------------
+
+    public boolean speechRecognitionIsSupported() {
+        return false;
+    }
+
+    public void startSpeechRecognition(com.codename1.media.RecognitionOptions options,
+                                       com.codename1.media.RecognitionCallback callback) {
+        if (callback != null) {
+            Display.getInstance().callSerially(
+                    new UnsupportedSpeechFallback(callback));
+        }
+    }
+
+    /// Static helper that fires the no-op fallback error on the EDT.
+    /// Named so SpotBugs' SIC_INNER_SHOULD_BE_STATIC_ANON doesn't
+    /// flag the equivalent anonymous Runnable.
+    private static final class UnsupportedSpeechFallback implements Runnable {
+        private final com.codename1.media.RecognitionCallback callback;
+
+        UnsupportedSpeechFallback(com.codename1.media.RecognitionCallback callback) {
+            this.callback = callback;
+        }
+
+        @Override
+        public void run() {
+            callback.onError(new UnsupportedOperationException(
+                    "Speech recognition is not supported on this platform"));
+        }
+    }
+
+    public void stopSpeechRecognition() {
+        // No-op: platforms with no recognizer have nothing to stop.
+    }
+
+    public boolean textToSpeechIsSupported() {
+        return false;
+    }
+
+    public void textToSpeechSpeak(String text, com.codename1.media.TtsOptions options) {
+        // No-op fallback: apps can probe textToSpeechIsSupported()
+        // first; calling speak() on an unsupported platform is silent
+        // by design so simulator/test code paths keep flowing.
+    }
+
+    public void textToSpeechStop() {
+    }
+
+    public String[] textToSpeechAvailableVoices() {
+        return new String[0];
+    }
+
 /// Translates the X/Y location for drawing on the underlying surface. Translation
     /// is incremental so the new value will be added to the current translation and
     /// in order to reset translation we have to invoke
@@ -1894,6 +1961,18 @@ public abstract class CodenameOneImplementation {
         // NOt implemented yet... need to implement.
 
 
+    }
+
+    /// Marks the start of a user-overrideable paint scope (e.g. `Component.paint`,
+    /// `Component.paintBackground`, `Painter.paint`, glass pane). Ports may use this
+    /// to snapshot graphics state and validate that the scope leaves it unchanged.
+    /// Default is a no-op so device ports pay zero cost.
+    public void beginPaintScope(Object graphics, Object owner) {
+    }
+
+    /// Marks the end of a paint scope opened by `#beginPaintScope`. Must be paired
+    /// with a `beginPaintScope` call on the same graphics with the same owner.
+    public void endPaintScope(Object graphics, Object owner) {
     }
 
     /// Draws a line between the 2 X/Y coordinates
@@ -3376,6 +3455,29 @@ public abstract class CodenameOneImplementation {
             }
         }
         setColor(graphics, oldColor);
+    }
+
+    /// Fills the rectangle (x, y, width, height) with the given multi-stop
+    /// gradient. Default implementation reuses a weakly-cached rasterization
+    /// from the Gradient (see `Gradient#getCachedRaster`) - so a gradient
+    /// painted into the same-sized rectangle on subsequent frames pays only
+    /// for the texture upload, not per-pixel re-sampling. Ports with hardware
+    /// shader support should override and draw directly through the shader.
+    public void fillGradient(Object graphics, Gradient gradient, int x, int y, int width, int height) {
+        if (gradient == null || width <= 0 || height <= 0) {
+            return;
+        }
+        Image img = gradient.getCachedRaster(width, height);
+        if (img == null) {
+            return;
+        }
+        drawImage(graphics, img.getImage(), x, y);
+    }
+
+    /// In-place region blur for CSS backdrop-filter:blur(). Default returns false
+    /// signalling no in-place support - caller falls back to snapshot+blur.
+    public boolean blurRegion(Object graphics, int x, int y, int width, int height, float radius) {
+        return false;
     }
 
     private boolean checkIntersection(Object g, int y0, int x1, int x2, int y1, int y2, int[] intersections, int intersectionsCount) {
@@ -6350,6 +6452,104 @@ public abstract class CodenameOneImplementation {
         return false;
     }
 
+    // ---------------------------------------------------------------------
+    // Deeper-network connectivity platform accessors.
+    //
+    // Each create*Platform() factory returns a narrow abstract class that
+    // the public-facing APIs in com.codename1.io.{wifi,bonjour,usb} ask for
+    // via Display.getInstance().getXxxPlatform(). Platform ports override
+    // the factory they care about; everything else falls through to the
+    // default no-op implementations. Keeping these as small factories
+    // (instead of dozens of methods on this class) lets each port ship its
+    // platform-specific code in a dedicated class and keeps this base
+    // implementation modular.
+    // ---------------------------------------------------------------------
+
+    private WifiPlatform wifiPlatform;
+    private WifiDirectPlatform wifiDirectPlatform;
+    private BonjourPlatform bonjourPlatform;
+    private UsbPlatform usbPlatform;
+    private NetworkTypePlatform networkTypePlatform;
+
+    public final WifiPlatform getWifiPlatform() {
+        if (wifiPlatform == null) {
+            WifiPlatform p = createWifiPlatform();
+            wifiPlatform = p != null ? p : new WifiPlatform();
+        }
+        return wifiPlatform;
+    }
+
+    /// Platform ports override to return their WiFi implementation. The
+    /// default returns `null`, which the caller turns into the
+    /// unsupported stub built into `WifiPlatform`.
+    protected WifiPlatform createWifiPlatform() {
+        return null;
+    }
+
+    public final WifiDirectPlatform getWifiDirectPlatform() {
+        if (wifiDirectPlatform == null) {
+            WifiDirectPlatform p = createWifiDirectPlatform();
+            wifiDirectPlatform = p != null ? p : new WifiDirectPlatform();
+        }
+        return wifiDirectPlatform;
+    }
+
+    protected WifiDirectPlatform createWifiDirectPlatform() {
+        return null;
+    }
+
+    public final BonjourPlatform getBonjourPlatform() {
+        if (bonjourPlatform == null) {
+            BonjourPlatform p = createBonjourPlatform();
+            bonjourPlatform = p != null ? p : new BonjourPlatform();
+        }
+        return bonjourPlatform;
+    }
+
+    protected BonjourPlatform createBonjourPlatform() {
+        return null;
+    }
+
+    public final UsbPlatform getUsbPlatform() {
+        if (usbPlatform == null) {
+            UsbPlatform p = createUsbPlatform();
+            usbPlatform = p != null ? p : new UsbPlatform();
+        }
+        return usbPlatform;
+    }
+
+    protected UsbPlatform createUsbPlatform() {
+        return null;
+    }
+
+    public final NetworkTypePlatform getNetworkTypePlatform() {
+        if (networkTypePlatform == null) {
+            NetworkTypePlatform p = createNetworkTypePlatform();
+            networkTypePlatform = p != null ? p : new LegacyAccessPointNetworkType(this);
+        }
+        return networkTypePlatform;
+    }
+
+    protected NetworkTypePlatform createNetworkTypePlatform() {
+        return null;
+    }
+
+    /// Fallback `NetworkTypePlatform` for ports that haven't been updated
+    /// to provide their own. Bridges to the legacy access-point API so
+    /// `NetworkManager.getCurrentNetworkType()` still distinguishes
+    /// "online" from "offline" when an AP is configured.
+    private static final class LegacyAccessPointNetworkType extends NetworkTypePlatform {
+        private final CodenameOneImplementation impl;
+        LegacyAccessPointNetworkType(CodenameOneImplementation impl) {
+            this.impl = impl;
+        }
+        @Override public int getCurrentNetworkType() {
+            return impl.isAPSupported() && impl.getCurrentAccessPoint() != null
+                    ? NetworkManager.NETWORK_TYPE_OTHER
+                    : NetworkManager.NETWORK_TYPE_NONE;
+        }
+    }
+
     /// For some reason the standard code for writing UTF8 output in a server request
     /// doesn't work as expected on SE/CDC stacks.
     ///
@@ -6526,6 +6726,35 @@ public abstract class CodenameOneImplementation {
         return null;
     }
 
+    /// Returns the port-specific biometric authentication entry point. Default
+    /// implementation returns {@code null}; ports that support biometrics
+    /// override this to return a cached singleton. Application code should
+    /// use {@link com.codename1.security.Biometrics#getInstance()} instead
+    /// of calling this directly --- it transparently substitutes a no-op
+    /// fallback when the port returns {@code null}.
+    public Biometrics getBiometrics() {
+        return null;
+    }
+
+    /// Returns the port-specific biometric-gated secure storage. Default
+    /// implementation returns {@code null}; ports that back the keychain
+    /// override this. Application code should call
+    /// {@link com.codename1.security.SecureStorage#getInstance()} instead.
+    public SecureStorage getSecureStorage() {
+        return null;
+    }
+
+    /// Returns the port-specific NFC entry point. Default implementation
+    /// returns {@code null}; ports that implement
+    /// {@link com.codename1.nfc.Nfc} override this to return a cached
+    /// singleton. Application code should use
+    /// {@link com.codename1.nfc.Nfc#getInstance()} instead of calling this
+    /// directly --- it transparently substitutes a no-op fallback when the
+    /// port returns {@code null}.
+    public com.codename1.nfc.Nfc getNfc() {
+        return null;
+    }
+
     /// Allows buggy implementations (Android) to release image objects
     ///
     /// #### Parameters
@@ -6540,6 +6769,15 @@ public abstract class CodenameOneImplementation {
     ///
     /// - `response`: callback for the resulting image
     public void capturePhoto(ActionListener response) {
+    }
+
+    /// Factory for the low-level `com.codename1.camera.Camera` API. Each call
+    /// returns a fresh per-session backend, or `null` on platforms that do not
+    /// implement the new API. Subclasses override to wire in their port.
+    ///
+    /// @hidden
+    public CameraImpl createCameraImpl() {
+        return null;
     }
 
     /// Captures a screenshot of the screen.
@@ -7081,6 +7319,22 @@ public abstract class CodenameOneImplementation {
     /// higher) to dictate where the popover dialog should be placed.
     public void share(String text, String image, String mimeType, Rectangle sourceRect) {
 
+    }
+
+    /// Share variant that delivers an outcome through `listener`.
+    ///
+    /// The default implementation delegates to the legacy
+    /// [#share(String,String,String,Rectangle)] entry point and reports
+    /// `SHARED_TO(null)` once it returns, since this base class has no
+    /// way to observe the platform sheet. Ports that can observe the
+    /// result (iOS, Android API 22+) override this method.
+    ///
+    /// `listener` is guaranteed non-null by [com.codename1.ui.Display#share].
+    public void share(String text, String image, String mimeType, Rectangle sourceRect, ShareResultListener listener) {
+        share(text, image, mimeType, sourceRect);
+        if (listener != null) {
+            listener.onResult(ShareResult.sharedTo(null));
+        }
     }
 
     // BEGIN TRANSFORMATION METHODS---------------------------------------------------------
@@ -9279,6 +9533,11 @@ public abstract class CodenameOneImplementation {
                 case Style.BACKGROUND_GRADIENT_LINEAR_HORIZONTAL:
                 case Style.BACKGROUND_GRADIENT_LINEAR_VERTICAL:
                 case Style.BACKGROUND_GRADIENT_RADIAL:
+                case Style.BACKGROUND_GRADIENT_LINEAR:
+                case Style.BACKGROUND_GRADIENT_RADIAL_FULL:
+                case Style.BACKGROUND_GRADIENT_CONIC:
+                case Style.BACKGROUND_GRADIENT_REPEATING_LINEAR:
+                case Style.BACKGROUND_GRADIENT_REPEATING_RADIAL:
                     drawGradientBackground(s, nativeGraphics, x, y, width, height);
                     return;
                 default:
@@ -9312,6 +9571,18 @@ public abstract class CodenameOneImplementation {
                         x, y, width, height, s.getBackgroundGradientRelativeX(), s.getBackgroundGradientRelativeY(),
                         s.getBackgroundGradientRelativeSize());
                 return;
+            case Style.BACKGROUND_GRADIENT_LINEAR:
+            case Style.BACKGROUND_GRADIENT_RADIAL_FULL:
+            case Style.BACKGROUND_GRADIENT_CONIC:
+            case Style.BACKGROUND_GRADIENT_REPEATING_LINEAR:
+            case Style.BACKGROUND_GRADIENT_REPEATING_RADIAL: {
+                Gradient g = s.getGradient();
+                if (g != null) {
+                    fillGradient(nativeGraphics, g, x, y, width, height);
+                    return;
+                }
+                break;
+            }
             default:
                 // Style.BACKGROUND_NONE
                 if (s.getBgTransparency() != 0) {
@@ -10087,5 +10358,78 @@ public abstract class CodenameOneImplementation {
                 callback.registeredForPush("" + pushId);
             }
         }
+    }
+
+    // ================================================================
+    // Crypto bridge -- see com.codename1.security package.
+    //
+    // The default implementations below all throw -- each platform port
+    // (JavaSEPort, AndroidImplementation, IOSImplementation) overrides them
+    // with the real native-backed implementation. The core stays free of
+    // java.security / javax.crypto references because the core compiles
+    // against the CLDC11 stub where those classes (and full Class reflection)
+    // are not available.
+
+    private static RuntimeException cryptoUnsupported(String op) {
+        return new RuntimeException("Crypto operation " + op + " is not supported on this platform. "
+                + "If you are running in a fresh CodenameOneImplementation subclass, override the matching method.");
+    }
+
+    /// Fills `out` with cryptographically secure random bytes. Override in the
+    /// port to route to the platform's native CSPRNG.
+    public void secureRandomBytes(byte[] out) {
+        throw cryptoUnsupported("secureRandomBytes");
+    }
+
+    /// Encrypts with AES. Modes / paddings supported: AES/CBC/PKCS5Padding,
+    /// AES/CBC/NoPadding, AES/GCM/NoPadding (recommended -- authenticated;
+    /// the auth tag is appended to the ciphertext per the JCE convention) and
+    /// AES/ECB/PKCS5Padding (legacy interop only). `iv` may be null for ECB.
+    /// `aad` is associated data for GCM (may be null).
+    public byte[] aesEncrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] plaintext) {
+        throw cryptoUnsupported("aesEncrypt");
+    }
+
+    /// Decrypts with AES. Same parameters as `aesEncrypt`.
+    public byte[] aesDecrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] ciphertext) {
+        throw cryptoUnsupported("aesDecrypt");
+    }
+
+    /// Encrypts with RSA using an X.509 (SubjectPublicKeyInfo) DER-encoded
+    /// public key. `transformation` is typically
+    /// "RSA/ECB/OAEPWithSHA-256AndMGF1Padding" or "RSA/ECB/PKCS1Padding".
+    public byte[] rsaEncrypt(String transformation, byte[] publicKeyX509, byte[] plaintext) {
+        throw cryptoUnsupported("rsaEncrypt");
+    }
+
+    /// Decrypts with RSA using a PKCS#8 DER-encoded private key.
+    public byte[] rsaDecrypt(String transformation, byte[] privateKeyPkcs8, byte[] ciphertext) {
+        throw cryptoUnsupported("rsaDecrypt");
+    }
+
+    /// Computes a signature. `algorithm` is e.g. "SHA256withRSA",
+    /// "SHA256withECDSA". `keyAlgorithm` is "RSA" or "EC".
+    public byte[] cryptoSign(String algorithm, String keyAlgorithm, byte[] privateKeyPkcs8, byte[] data) {
+        throw cryptoUnsupported("cryptoSign");
+    }
+
+    /// Verifies a signature with an X.509 public key.
+    public boolean cryptoVerify(String algorithm, String keyAlgorithm, byte[] publicKeyX509, byte[] data, byte[] signature) {
+        throw cryptoUnsupported("cryptoVerify");
+    }
+
+    /// Generates a fresh RSA key pair of the given size in bits. Returns
+    /// `{publicKeyX509, privateKeyPkcs8}`.
+    public byte[][] generateRsaKeyPair(int bits) {
+        throw cryptoUnsupported("generateRsaKeyPair");
+    }
+
+    /// Generates `bytes` of fresh symmetric key material. The default just
+    /// delegates to [#secureRandomBytes(byte[])] (no structure is required
+    /// for AES keys).
+    public byte[] generateSymmetricKey(int bytes) {
+        byte[] out = new byte[bytes];
+        secureRandomBytes(out);
+        return out;
     }
 }

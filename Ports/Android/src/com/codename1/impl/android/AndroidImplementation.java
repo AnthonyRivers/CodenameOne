@@ -252,6 +252,27 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
     static final int DROID_IMPL_KEY_VOLUME_UP = -23457;
     static final int DROID_IMPL_KEY_VOLUME_DOWN = -23458;
     static final int DROID_IMPL_KEY_MUTE = -23459;
+    static final int DROID_IMPL_KEY_ENTER = -23460;
+    static final int DROID_IMPL_KEY_TAB = -23461;
+    static final int DROID_IMPL_KEY_ESCAPE = -23462;
+    static final int DROID_IMPL_KEY_HOME = -23463;
+    static final int DROID_IMPL_KEY_END = -23464;
+    static final int DROID_IMPL_KEY_PAGE_UP = -23465;
+    static final int DROID_IMPL_KEY_PAGE_DOWN = -23466;
+    static final int DROID_IMPL_KEY_INSERT = -23467;
+    static final int DROID_IMPL_KEY_FORWARD_DEL = -23468;
+    static final int DROID_IMPL_KEY_F1 = -23469;
+    static final int DROID_IMPL_KEY_F2 = -23470;
+    static final int DROID_IMPL_KEY_F3 = -23471;
+    static final int DROID_IMPL_KEY_F4 = -23472;
+    static final int DROID_IMPL_KEY_F5 = -23473;
+    static final int DROID_IMPL_KEY_F6 = -23474;
+    static final int DROID_IMPL_KEY_F7 = -23475;
+    static final int DROID_IMPL_KEY_F8 = -23476;
+    static final int DROID_IMPL_KEY_F9 = -23477;
+    static final int DROID_IMPL_KEY_F10 = -23478;
+    static final int DROID_IMPL_KEY_F11 = -23479;
+    static final int DROID_IMPL_KEY_F12 = -23480;
     static int[] leftSK = new int[]{DROID_IMPL_KEY_MENU};
 
     /**
@@ -1911,6 +1932,36 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
     }
 
     @Override
+    protected void pointerHover(int x, int y) {
+        super.pointerHover(x, y);
+    }
+
+    @Override
+    protected void pointerHover(int[] x, int[] y) {
+        super.pointerHover(x, y);
+    }
+
+    @Override
+    protected void pointerHoverPressed(int x, int y) {
+        super.pointerHoverPressed(x, y);
+    }
+
+    @Override
+    protected void pointerHoverPressed(int[] x, int[] y) {
+        super.pointerHoverPressed(x, y);
+    }
+
+    @Override
+    protected void pointerHoverReleased(int x, int y) {
+        super.pointerHoverReleased(x, y);
+    }
+
+    @Override
+    protected void pointerHoverReleased(int[] x, int[] y) {
+        super.pointerHoverReleased(x, y);
+    }
+
+    @Override
     protected int getDragAutoActivationThreshold() {
         return 1000000;
     }
@@ -2652,6 +2703,17 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
     @Override
     public void fillRadialGradient(Object graphics, int startColor, int endColor, int x, int y, int width, int height, int startAngle, int arcAngle) {
         ((AndroidGraphics)graphics).fillRadialGradient(startColor, endColor, x, y, width, height, startAngle, arcAngle);
+    }
+
+    @Override
+    public void fillGradient(Object graphics, com.codename1.ui.Gradient gradient,
+            int x, int y, int width, int height) {
+        // Always route Android multi-stop gradients through the native Shader
+        // path - the software rasterizer in the base impl would otherwise
+        // allocate a per-call ARGB buffer on the Bitmap-graphics path used by
+        // mutable images, which on Android emulator hardware GCs heavily for
+        // conic / large fills (the case that hung the instrumentation suite).
+        ((AndroidGraphics) graphics).fillGradient(gradient, x, y, width, height);
     }
 
     @Override
@@ -5484,6 +5546,16 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
     }
 
     @Override
+    public void pushClip(Object graphics) {
+        ((AndroidGraphics) graphics).pushClip();
+    }
+
+    @Override
+    public void popClip(Object graphics) {
+        ((AndroidGraphics) graphics).popClip();
+    }
+
+    @Override
     public boolean isTranslateMatrixSupported() {
         return true;
     }
@@ -7014,6 +7086,34 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
         t.printStackTrace(p);
     }
 
+    private AndroidBiometrics biometrics;
+    private AndroidSecureStorage secureStorage;
+    private AndroidNfc nfc;
+
+    @Override
+    public com.codename1.security.Biometrics getBiometrics() {
+        if (biometrics == null) {
+            biometrics = new AndroidBiometrics();
+        }
+        return biometrics;
+    }
+
+    @Override
+    public com.codename1.security.SecureStorage getSecureStorage() {
+        if (secureStorage == null) {
+            secureStorage = new AndroidSecureStorage();
+        }
+        return secureStorage;
+    }
+
+    @Override
+    public com.codename1.nfc.Nfc getNfc() {
+        if (nfc == null) {
+            nfc = new AndroidNfc(this);
+        }
+        return nfc;
+    }
+
     /**
      * This method returns the platform Location Control
      *
@@ -7633,6 +7733,11 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
 
     @Override
     public void share(String text, String image, String mimeType, Rectangle sourceRect){
+        share(text, image, mimeType, sourceRect, null);
+    }
+
+    @Override
+    public void share(String text, String image, String mimeType, Rectangle sourceRect, final com.codename1.share.ShareResultListener listener) {
         /*if(!checkForPermission(Manifest.permission.READ_PHONE_STATE, "This is required to perform share")){
             return;
         }*/
@@ -7650,7 +7755,81 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
             shareIntent.putExtra(Intent.EXTRA_STREAM, Uri.parse(fixAttachmentPath(image)));
             shareIntent.putExtra(Intent.EXTRA_TEXT, text);
         }
-        getContext().startActivity(Intent.createChooser(shareIntent, "Share with..."));
+
+        Intent chooser;
+        try {
+            if (listener != null && android.os.Build.VERSION.SDK_INT >= 22) {
+                chooser = buildShareChooserWithCallback(shareIntent, listener);
+            } else {
+                chooser = Intent.createChooser(shareIntent, "Share with...");
+            }
+        } catch (Throwable t) {
+            // Fall back to the plain chooser, then synthesize a listener
+            // result so the app doesn't hang on an unfulfilled callback.
+            chooser = Intent.createChooser(shareIntent, "Share with...");
+            if (listener != null) {
+                listener.onResult(com.codename1.share.ShareResult.sharedTo(null));
+            }
+        }
+        getContext().startActivity(chooser);
+    }
+
+    private static int nextShareReceiverId = 1;
+
+    @TargetApi(22)
+    private Intent buildShareChooserWithCallback(Intent shareIntent, final com.codename1.share.ShareResultListener listener) {
+        final Context appCtx = getContext().getApplicationContext();
+        final String action = appCtx.getPackageName() + ".CN1_SHARE_CHOSEN." + (nextShareReceiverId++);
+        // The receiver fires once when the user picks a target. Android
+        // does not expose a dismissal signal for the chooser, so the
+        // listener simply does not fire on user-cancel (see comment
+        // further down).
+        final boolean[] delivered = new boolean[1];
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (delivered[0]) return;
+                delivered[0] = true;
+                try { appCtx.unregisterReceiver(this); } catch (Throwable ignore) {}
+                String pkg = null;
+                try {
+                    android.content.ComponentName cn = intent.getParcelableExtra(Intent.EXTRA_CHOSEN_COMPONENT);
+                    if (cn != null) pkg = cn.getPackageName();
+                } catch (Throwable ignore) {}
+                listener.onResult(com.codename1.share.ShareResult.sharedTo(pkg));
+            }
+        };
+        IntentFilter filter = new IntentFilter(action);
+        boolean registered = false;
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            // RECEIVER_EXPORTED = 0x2 -- constant exists at runtime on
+            // API 33+ but is not present in older android.jar build deps,
+            // so call the 3-arg overload via reflection to stay source-
+            // compatible.
+            try {
+                java.lang.reflect.Method m = Context.class.getMethod(
+                        "registerReceiver", BroadcastReceiver.class, IntentFilter.class, int.class);
+                m.invoke(appCtx, receiver, filter, Integer.valueOf(0x2));
+                registered = true;
+            } catch (Throwable ignore) {}
+        }
+        if (!registered) {
+            appCtx.registerReceiver(receiver, filter);
+        }
+        // Android's chooser IntentSender callback never fires on
+        // dismissal: there is no public API to observe a user-cancel.
+        // Apps that need a dismissal signal must use Activity-resume.
+
+        Intent pi = new Intent(action).setPackage(appCtx.getPackageName());
+        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            // FLAG_MUTABLE was introduced in API 31; its numeric value
+            // (0x02000000) is referenced here directly so the source
+            // still compiles against pre-31 android.jar build deps.
+            piFlags |= 0x02000000;
+        }
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(appCtx, 0, pi, piFlags);
+        return Intent.createChooser(shareIntent, "Share with...", pendingIntent.getIntentSender());
     }
 
     /**
@@ -9781,6 +9960,44 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
         }
     }
 
+    @Override
+    public com.codename1.impl.CameraImpl createCameraImpl() {
+        Activity act = getActivity();
+        if (act == null) return null;
+        return new AndroidCameraImpl(act);
+    }
+
+    // Deeper-network connectivity platform factories. Each returns a small
+    // platform-specific class living under
+    // com.codename1.impl.android.connectivity. Those classes are loaded
+    // lazily on first call so apps that never reference WiFi / Bonjour /
+    // USB / NetworkTypeListener never pay the loading cost.
+
+    @Override
+    protected com.codename1.io.wifi.WifiPlatform createWifiPlatform() {
+        return new com.codename1.impl.android.connectivity.AndroidWifiPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.wifi.WifiDirectPlatform createWifiDirectPlatform() {
+        return new com.codename1.impl.android.connectivity.AndroidWifiDirectPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.bonjour.BonjourPlatform createBonjourPlatform() {
+        return new com.codename1.impl.android.connectivity.AndroidBonjourPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.usb.UsbPlatform createUsbPlatform() {
+        return new com.codename1.impl.android.connectivity.AndroidUsbPlatform();
+    }
+
+    @Override
+    protected com.codename1.io.NetworkTypePlatform createNetworkTypePlatform() {
+        return new com.codename1.impl.android.connectivity.AndroidNetworkTypePlatform();
+    }
+
     public String getCurrentAccessPoint() {
 
         ConnectivityManager cm = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -11307,5 +11524,124 @@ public class AndroidImplementation extends CodenameOneImplementation implements 
                 }
             }
         });
+    }
+
+    // ================================================================
+    // Crypto bridge -- routes com.codename1.security onto the standard
+    // Android JCE provider.
+
+    private static java.security.SecureRandom androidSecureRandom;
+    private static final Object androidSecureRandomSync = new Object();
+
+    private static java.security.SecureRandom androidSecureRandom() {
+        synchronized (androidSecureRandomSync) {
+            if (androidSecureRandom == null) {
+                androidSecureRandom = new java.security.SecureRandom();
+            }
+            return androidSecureRandom;
+        }
+    }
+
+    @Override
+    public void secureRandomBytes(byte[] out) {
+        if (out == null) return;
+        androidSecureRandom().nextBytes(out);
+    }
+
+    @Override
+    public byte[] aesEncrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] plaintext) {
+        return androidAes(transformation, key, iv, aad, plaintext, javax.crypto.Cipher.ENCRYPT_MODE);
+    }
+
+    @Override
+    public byte[] aesDecrypt(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] ciphertext) {
+        return androidAes(transformation, key, iv, aad, ciphertext, javax.crypto.Cipher.DECRYPT_MODE);
+    }
+
+    private static byte[] androidAes(String transformation, byte[] key, byte[] iv, byte[] aad, byte[] input, int mode) {
+        try {
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(transformation);
+            javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(key, "AES");
+            String tu = transformation == null ? "" : transformation.toUpperCase();
+            if (tu.indexOf("GCM") >= 0) {
+                cipher.init(mode, keySpec, new javax.crypto.spec.GCMParameterSpec(128, iv));
+            } else if (iv != null) {
+                cipher.init(mode, keySpec, new javax.crypto.spec.IvParameterSpec(iv));
+            } else {
+                cipher.init(mode, keySpec);
+            }
+            if (aad != null && aad.length > 0) {
+                cipher.updateAAD(aad);
+            }
+            return cipher.doFinal(input);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("AES " + (mode == javax.crypto.Cipher.ENCRYPT_MODE ? "encrypt" : "decrypt") + " failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[] rsaEncrypt(String transformation, byte[] publicKeyX509, byte[] plaintext) {
+        try {
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(transformation);
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("RSA");
+            java.security.PublicKey key = kf.generatePublic(new java.security.spec.X509EncodedKeySpec(publicKeyX509));
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key);
+            return cipher.doFinal(plaintext);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("RSA encrypt failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[] rsaDecrypt(String transformation, byte[] privateKeyPkcs8, byte[] ciphertext) {
+        try {
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance(transformation);
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("RSA");
+            java.security.PrivateKey key = kf.generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privateKeyPkcs8));
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, key);
+            return cipher.doFinal(ciphertext);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("RSA decrypt failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[] cryptoSign(String algorithm, String keyAlgorithm, byte[] privateKeyPkcs8, byte[] data) {
+        try {
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance(keyAlgorithm);
+            java.security.PrivateKey priv = kf.generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(privateKeyPkcs8));
+            java.security.Signature sig = java.security.Signature.getInstance(algorithm);
+            sig.initSign(priv);
+            sig.update(data);
+            return sig.sign();
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("sign failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public boolean cryptoVerify(String algorithm, String keyAlgorithm, byte[] publicKeyX509, byte[] data, byte[] signature) {
+        try {
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance(keyAlgorithm);
+            java.security.PublicKey pub = kf.generatePublic(new java.security.spec.X509EncodedKeySpec(publicKeyX509));
+            java.security.Signature sig = java.security.Signature.getInstance(algorithm);
+            sig.initVerify(pub);
+            sig.update(data);
+            return sig.verify(signature);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("verify failed: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public byte[][] generateRsaKeyPair(int bits) {
+        try {
+            java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("RSA");
+            kpg.initialize(bits);
+            java.security.KeyPair kp = kpg.generateKeyPair();
+            return new byte[][]{ kp.getPublic().getEncoded(), kp.getPrivate().getEncoded() };
+        } catch (java.security.GeneralSecurityException e) {
+            throw new RuntimeException("RSA keypair generation failed: " + e.getMessage());
+        }
     }
 }
