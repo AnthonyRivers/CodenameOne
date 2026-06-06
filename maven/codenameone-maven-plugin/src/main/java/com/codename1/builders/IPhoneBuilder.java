@@ -70,7 +70,10 @@ public class IPhoneBuilder extends Executor {
     private File tmpFile;
     private File icon57;
     private File icon512;
-    private static final String DEFAULT_MIN_DEPLOYMENT_VERSION = "12.0";
+    // Bumped from 12.0 → 13.0 to enable NSURLSessionWebSocketTask
+    // (iOS 13+) used by com.codename1.io.WebSocket's iOS implementation.
+    // BuildDaemon's iOS lane needs the same bump.
+    private static final String DEFAULT_MIN_DEPLOYMENT_VERSION = "13.0";
 
     // StringBuilder used for constructing ruby script with xcodeproj
     // which adds localized strings files to the project.
@@ -94,6 +97,7 @@ public class IPhoneBuilder extends Executor {
     private boolean usesCryptoGcm;
     private boolean usesBiometrics;
     private boolean usesNfc;
+    private boolean usesCn1Camera;
     private boolean usesOidc;
     private boolean usesAppleSignIn;
     private boolean usesWebauthn;
@@ -724,6 +728,14 @@ public class IPhoneBuilder extends Executor {
                         if (cls.equals("com/codename1/nfc/HostCardEmulationService")) {
                             usesNfcHce = true;
                         }
+                    }
+                    // Low-level camera API (com.codename1.camera.*). Gated on
+                    // actual usage -- NOT on the camera privacy description --
+                    // so the old modal Capture API (which only sets
+                    // INCLUDE_CAMERA_USAGE) does not pull in the new
+                    // AVFoundation-based CN1Camera natives.
+                    if (!usesCn1Camera && cls.indexOf("com/codename1/camera/") == 0) {
+                        usesCn1Camera = true;
                     }
                     // OidcClient + SystemBrowser rely on
                     // ASWebAuthenticationSession (AuthenticationServices.framework,
@@ -1958,6 +1970,25 @@ public class IPhoneBuilder extends Executor {
                 }
             }
 
+            // Uncomment INCLUDE_CN1_CAMERA in CodenameOne_GLViewController.h
+            // so the com.codename1.camera native bridge (CN1Camera.{h,m})
+            // compiles in. This is deliberately independent of
+            // INCLUDE_CAMERA_USAGE (the old modal Capture API): the new
+            // AVFoundation natives are only built when the app actually
+            // references com.codename1.camera.*, matching the AVFoundation
+            // framework injection driven by the same scan via AiDependencyTable.
+            if (usesCn1Camera) {
+                try {
+                    replaceInFile(new File(buildinRes,
+                            "CodenameOne_GLViewController.h"),
+                            "//#define INCLUDE_CN1_CAMERA",
+                            "#define INCLUDE_CN1_CAMERA");
+                } catch (IOException ex) {
+                    throw new BuildException(
+                            "Failed to enable INCLUDE_CN1_CAMERA", ex);
+                }
+            }
+
             // Sign in with Apple requires the
             // com.apple.developer.applesignin entitlement; Apple rejects
             // builds whose binary references ASAuthorizationAppleIDProvider
@@ -1970,6 +2001,21 @@ public class IPhoneBuilder extends Executor {
                             "ios.entitlements.com.apple.developer.applesignin",
                             "Default");
                 }
+            }
+
+            // Time-sensitive / critical notification entitlements. These require a
+            // matching capability to be enabled on the Apple App ID, so auto-injecting them
+            // from mere notification usage would break code signing for apps that have not
+            // provisioned the capability. They are therefore opt-in via build hints:
+            //   ios.timeSensitiveNotifications=true -> com.apple.developer.usernotifications.time-sensitive
+            //   ios.criticalAlerts=true             -> com.apple.developer.usernotifications.critical-alerts
+            if ("true".equals(request.getArg("ios.timeSensitiveNotifications", "false"))
+                    && request.getArg("ios.entitlements.com.apple.developer.usernotifications.time-sensitive", null) == null) {
+                request.putArgument("ios.entitlements.com.apple.developer.usernotifications.time-sensitive", "true");
+            }
+            if ("true".equals(request.getArg("ios.criticalAlerts", "false"))
+                    && request.getArg("ios.entitlements.com.apple.developer.usernotifications.critical-alerts", null) == null) {
+                request.putArgument("ios.entitlements.com.apple.developer.usernotifications.critical-alerts", "true");
             }
 
             // Deeper-network connectivity (WiFi info / NEHotspotConfiguration
@@ -2123,6 +2169,15 @@ public class IPhoneBuilder extends Executor {
                     } else {
                         addLibs += ";UserNotifications.framework";
                     }
+                }
+
+                // BackgroundTasks.framework (BGTaskScheduler / BGProcessingTaskRequest,
+                // iOS 13+) is referenced unconditionally by the IOSNative background
+                // processing bridge, so it must always be linked.
+                if (addLibs == null) {
+                    addLibs = "BackgroundTasks.framework";
+                } else if (!addLibs.toLowerCase().contains("backgroundtasks")) {
+                    addLibs += ";BackgroundTasks.framework";
                 }
 
                 if (request.getArg("ios.useJavascriptCore", "false").equalsIgnoreCase("true")) {
@@ -3514,6 +3569,21 @@ public class IPhoneBuilder extends Executor {
             }
         }
 
+        // Constraint-aware background work / BackgroundTask map to BGTaskScheduler. The
+        // permitted identifiers are declared via ios.backgroundProcessingIds (comma list,
+        // default <packageName>.processing). Their presence implies the "processing"
+        // background mode.
+        String backgroundProcessingIds = request.getArg("ios.backgroundProcessingIds", null);
+        if (backgroundProcessingIds == null && "true".equals(request.getArg("ios.usesBackgroundProcessing", "false"))) {
+            backgroundProcessingIds = request.getPackageName() + ".processing";
+        }
+        if (backgroundProcessingIds != null && backgroundProcessingIds.trim().length() > 0) {
+            if (backgroundModesStr == null || !backgroundModesStr.contains("processing")) {
+                backgroundModesStr = (backgroundModesStr == null || backgroundModesStr.trim().length() == 0)
+                        ? "processing" : backgroundModesStr + ",processing";
+            }
+        }
+
         if (backgroundModesStr != null) {
             String[] backgroundModes = backgroundModesStr.split(",");
             if (!inject.contains("UIBackgroundModes")) {
@@ -3530,8 +3600,28 @@ public class IPhoneBuilder extends Executor {
                 inject += "</array>";
             } else {
                 throw new IOException("You cannot use both ios.background_modes build hint and use UIBackgroundModes in the ios.plistInject build hint.  Choose one or the other");
-                
+
             }
+        }
+
+        // BGTaskScheduler permitted identifiers (iOS 13+). Required or iOS throws when the
+        // app registers/submits a background processing task.
+        if (backgroundProcessingIds != null && backgroundProcessingIds.trim().length() > 0
+                && !inject.contains("BGTaskSchedulerPermittedIdentifiers")) {
+            inject += "\n<key>BGTaskSchedulerPermittedIdentifiers</key><array>";
+            for (String id : backgroundProcessingIds.split(",")) {
+                if (id.trim().length() > 0) {
+                    inject += "<string>" + id.trim() + "</string>";
+                }
+            }
+            inject += "</array>";
+        }
+
+        // Receive-shared-content: the host app reads the shared payload from this App Group
+        // suite (written by the share extension). See ios.shareAppGroup build hint.
+        String shareAppGroup = request.getArg("ios.shareAppGroup", null);
+        if (shareAppGroup != null && shareAppGroup.trim().length() > 0 && !inject.contains("CN1ShareAppGroup")) {
+            inject += "\n<key>CN1ShareAppGroup</key><string>" + shareAppGroup.trim() + "</string>";
         }
 
         BufferedReader infoReader = new BufferedReader(new InputStreamReader(

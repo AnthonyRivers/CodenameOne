@@ -96,6 +96,9 @@ public final class Cn1ssDeviceRunner extends DeviceRunner {
     // skipping is handled at runtime by shouldForceTimeoutInHtml5 below.
     private static final BaseTest[] DEFAULT_TEST_CLASSES = new BaseTest[]{
             new MainScreenScreenshotTest(),
+            // Advertising API: renders a banner + native-ad feed via the
+            // deterministic MockAdProvider (cn1-ads-mock) for a pixel-stable shot.
+            new AdsScreenshotTest(),
             // Animation/transition grid tests: each emits a 2x3 frame grid driven
             // by the AnimationTime override so iOS/Android/JavaSE produce identical
             // pixels regardless of wall-clock pacing. Skipped on HTML5 via the
@@ -259,7 +262,17 @@ public final class Cn1ssDeviceRunner extends DeviceRunner {
             new Base64NativePerformanceTest(),
             new AccessibilityTest(),
             new FileSystemStorageOpenInputStreamMissingTest(),
-            new MutableImageReadbackTest()
+            new MutableImageReadbackTest(),
+            // Desktop integration demo. Placed LAST on purpose: it shows a Toolbar with text
+            // and a populated list, which warms the font cache / shifts suite timing, and the
+            // earlier graphics screenshot tests (DrawString, DrawStringDecorated, inscribed
+            // triangle grid) paint text directly during a frame that races the async font load -
+            // running this test before them changes whether those fonts are loaded at capture
+            // time and flips their baselines. Last = the rest of the suite matches master exactly.
+            // Inert on phone/tablet ports (plain Toolbar + hamburger side menu + faded scrollbar);
+            // on the Mac native build it enables desktop mode (commands move to the native menu
+            // bar, interactive always-visible scrollbar), reverting its global toggles after capture.
+            new DesktopModeScreenshotTest()
     };
 
     private static BaseTest prependedTest;
@@ -393,7 +406,17 @@ public final class Cn1ssDeviceRunner extends DeviceRunner {
                 // first; parked under the same suspicion.
                 || "ChartCombinedXYScreenshotTest".equals(testName)
                 || "ChartTransformScreenshotTest".equals(testName)
-                || "ChartRotatedScreenshotTest".equals(testName);
+                || "ChartRotatedScreenshotTest".equals(testName)
+                // ``graphicsTransform3dCanvasHang``: the 3D perspective /
+                // camera transform tests render into a canvas the worker-side
+                // screenshot path can't resolve (SCREENSHOT_START reports
+                // canvasCandidates=0), so the suite re-dispatches the same
+                // index indefinitely and never reaches the per-test deadline.
+                // The 2D transform tests (rotation, translation, affine) are
+                // unaffected and keep running. Tracked in port.js under the
+                // same name.
+                || "TransformPerspective".equals(testName)
+                || "TransformCamera".equals(testName);
     }
 
     private void awaitTestCompletion(int index, BaseTest testClass, String testName, long deadline) {

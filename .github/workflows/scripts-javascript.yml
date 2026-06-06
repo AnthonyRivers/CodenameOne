@@ -69,15 +69,25 @@ jobs:
       CN1_JS_BROWSER_LIFETIME_SECONDS: "1740"
       CN1SS_SKIP_COVERAGE: "1"
       CN1SS_FAIL_ON_MISMATCH: "1"
+      # Strict, matching the native ports. The "variable tail of dropped
+      # screenshots" that previously forced a tolerance of 20 was the
+      # canvas-accumulation root cause: browser_bridge.js retained every host
+      # canvas forever, so by ~test 66 the main thread thrashed, capture
+      # stalled and the suite re-dispatched. That leak is fixed (dead canvas
+      # host-refs are now released on the worker GC signal), so the suite
+      # delivers every screenshot deterministically -- a missing capture is a
+      # real regression again. Keep at 0 like Android/JavaSE (iOS uses 2 for
+      # OrientationLock + MutableImageReadback, which don't apply here).
+      CN1SS_ALLOWED_MISSING: "0"
       BROWSER_CMD: "node \"$GITHUB_WORKSPACE/scripts/run-javascript-headless-browser.mjs\""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set TMPDIR
         run: echo "TMPDIR=${{ runner.temp }}" >> $GITHUB_ENV
 
       - name: Cache codenameone-tools
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/codenameone-tools
           key: ${{ runner.os }}-cn1-tools-${{ hashFiles('scripts/setup-workspace.sh') }}
@@ -85,7 +95,7 @@ jobs:
             ${{ runner.os }}-cn1-tools-
 
       - name: Set up Java 8 for ParparVM
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '8'
@@ -100,19 +110,19 @@ jobs:
         run: mvn -B -f maven/pom.xml -pl parparvm -am -DskipTests -Dmaven.javadoc.skip=true package
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'maven'
 
       - name: Set up Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
       - name: Cache npm modules for scripts/
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: scripts/node_modules
           key: ${{ runner.os }}-scripts-npm-playwright-v1
@@ -121,7 +131,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-chromium-v2
@@ -225,7 +235,7 @@ jobs:
 
       - name: Upload JavaScript lifecycle artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: javascript-lifecycle-tests
           path: artifacts/javascript-lifecycle-tests
@@ -239,7 +249,7 @@ jobs:
 
       - name: Upload JavaScript screenshot artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: javascript-ui-tests
           path: artifacts/javascript-ui-tests

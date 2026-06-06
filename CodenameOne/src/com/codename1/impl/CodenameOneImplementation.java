@@ -53,6 +53,13 @@ import com.codename1.media.Media;
 import com.codename1.media.MediaRecorderBuilder;
 import com.codename1.messaging.Message;
 import com.codename1.notifications.LocalNotification;
+import com.codename1.notifications.NotificationChannelBuilder;
+import com.codename1.notifications.NotificationPermissionCallback;
+import com.codename1.notifications.NotificationPermissionRequest;
+import com.codename1.notifications.NotificationPermissionResult;
+import com.codename1.background.ForegroundService;
+import com.codename1.background.WorkRequest;
+import com.codename1.share.SharedContent;
 import com.codename1.share.ShareResult;
 import com.codename1.share.ShareResultListener;
 import com.codename1.payment.Purchase;
@@ -172,13 +179,39 @@ public abstract class CodenameOneImplementation {
     private BrowserComponent sharedJavascriptContext;
     private Dimension initialWindowSizeHintPercent;
 
-    static void setOnCurrentFormChange(Runnable on) {
+    /// Set a task to be executed every time the current form changes (e.g. on
+    /// navigation). Used by the advertising layer to show interstitials on
+    /// transitions; see [com.codename1.ads.AdManager#bindInterstitialOnTransition].
+    public static void setOnCurrentFormChange(Runnable on) {
         onCurrentFormChange = on;
     }
 
     /// Set a task to be executed once the implementation is being destroyed
     public static void setOnExit(Runnable on) {
         onExit = on;
+    }
+
+    private static Object currentApplicationInstance;
+
+    /// Stores the running application's main class instance so the implementation can
+    /// dispatch lifecycle style callbacks (such as shared content delivery) to it. Set by
+    /// the platform port when it bootstraps the application.
+    ///
+    /// #### Parameters
+    ///
+    /// - `app`: the application main class instance
+    public static void setCurrentApplicationInstance(Object app) {
+        currentApplicationInstance = app;
+    }
+
+    /// Returns the running application's main class instance, or null if it has not been
+    /// captured.
+    ///
+    /// #### Returns
+    ///
+    /// the application main class instance, or null
+    public static Object getCurrentApplicationInstance() {
+        return currentApplicationInstance;
     }
 
     /// Allows the system to register to receive push callbacks
@@ -1961,18 +1994,6 @@ public abstract class CodenameOneImplementation {
         // NOt implemented yet... need to implement.
 
 
-    }
-
-    /// Marks the start of a user-overrideable paint scope (e.g. `Component.paint`,
-    /// `Component.paintBackground`, `Painter.paint`, glass pane). Ports may use this
-    /// to snapshot graphics state and validate that the scope leaves it unchanged.
-    /// Default is a no-op so device ports pay zero cost.
-    public void beginPaintScope(Object graphics, Object owner) {
-    }
-
-    /// Marks the end of a paint scope opened by `#beginPaintScope`. Must be paired
-    /// with a `beginPaintScope` call on the same graphics with the same owner.
-    public void endPaintScope(Object graphics, Object owner) {
     }
 
     /// Draws a line between the 2 X/Y coordinates
@@ -4354,6 +4375,57 @@ public abstract class CodenameOneImplementation {
     ///
     /// - `commands`: the Codename One commands to use
     public void setNativeCommands(Vector commands) {
+    }
+
+    /// Returns the desktop title-bar mode for this platform: one of {@code "native"} (OS title
+    /// bar + native menu bar), {@code "custom"} (undecorated window where the CN1 Toolbar acts as
+    /// the title bar) or {@code "toolbar"} (legacy in-app CN1 Toolbar). Returns {@code "toolbar"}
+    /// by default; desktop ports override this when running on the desktop. This is the
+    /// authoritative source consulted by `Form.isDesktopNativeChrome()` - more robust than a theme
+    /// constant, which not all ports propagate identically.
+    ///
+    /// #### Returns
+    ///
+    /// the desktop title-bar mode, never null
+    public String getDesktopTitleBarMode() {
+        return "toolbar";
+    }
+
+    /// Minimizes the native desktop window when the application draws its own (custom mode)
+    /// window chrome on an undecorated window. No-op on platforms without a native window.
+    public void minimizeNativeWindow() {
+    }
+
+    /// Toggles the maximized state of the native desktop window when the application draws
+    /// its own (custom mode) window chrome. No-op on platforms without a native window.
+    public void toggleMaximizeNativeWindow() {
+    }
+
+    /// Closes the native desktop window when the application draws its own (custom mode)
+    /// window chrome. No-op on platforms without a native window.
+    public void closeNativeWindow() {
+    }
+
+    /// Begins dragging the native desktop window (custom mode title bar). The arguments are
+    /// absolute pointer coordinates at the start of the drag. No-op without a native window.
+    ///
+    /// #### Parameters
+    ///
+    /// - `x`: absolute pointer x
+    ///
+    /// - `y`: absolute pointer y
+    public void startNativeWindowDrag(int x, int y) {
+    }
+
+    /// Continues dragging the native desktop window (custom mode title bar). The arguments
+    /// are the current absolute pointer coordinates. No-op without a native window.
+    ///
+    /// #### Parameters
+    ///
+    /// - `x`: absolute pointer x
+    ///
+    /// - `y`: absolute pointer y
+    public void dragNativeWindow(int x, int y) {
     }
 
     /// Exits the application...
@@ -9287,6 +9359,47 @@ public abstract class CodenameOneImplementation {
     public void writeToSocketStream(Object socket, byte[] data) {
     }
 
+    /// Indicates whether the underlying implementation supports the
+    /// [com.codename1.io.WebSocket] API. Ports that do not implement
+    /// WebSocket return false; the public `WebSocket.isSupported()` calls
+    /// through here.
+    public boolean isWebSocketSupported() {
+        return false;
+    }
+
+    /// Create a platform-specific `WebSocketImpl` bound to the given URL.
+    /// The returned impl is not yet connected; the public `WebSocket` facade
+    /// wires its event sink and calls `connect(int)`.
+    ///
+    /// @throws RuntimeException if the port does not support WebSocket.
+    public WebSocketImpl createWebSocketImpl(String url) {
+        throw new RuntimeException("WebSocket not supported on this platform");
+    }
+
+    /// Write a range of the given byte array to the socket. The default implementation
+    /// copies the requested range into a fresh array and delegates to
+    /// {@link #writeToSocketStream(Object, byte[])}; platform ports that can write a
+    /// sub-range natively should override this to avoid the intermediate allocation.
+    ///
+    /// #### Parameters
+    ///
+    /// - `socket`: the socket instance
+    ///
+    /// - `data`: the buffer containing the data to write
+    ///
+    /// - `offset`: the offset within the buffer at which to start writing
+    ///
+    /// - `len`: the number of bytes to write
+    public void writeToSocketStream(Object socket, byte[] data, int offset, int len) {
+        if (offset == 0 && len == data.length) {
+            writeToSocketStream(socket, data);
+            return;
+        }
+        byte[] arr = new byte[len];
+        System.arraycopy(data, offset, arr, 0, len);
+        writeToSocketStream(socket, arr);
+    }
+
     private void mkdirs(FileSystemStorage fs, String path) {
         int lastPos = path.lastIndexOf('/');
         if (lastPos >= 0) {
@@ -10077,6 +10190,134 @@ public abstract class CodenameOneImplementation {
     }
 
     public void cancelLocalNotification(String notificationId) {
+    }
+
+    /// Requests permission to post notifications. The default implementation assumes the
+    /// platform has no permission model and immediately reports the permission as granted.
+    public void requestNotificationPermission(NotificationPermissionRequest request, NotificationPermissionCallback callback) {
+        if (callback != null) {
+            callback.notificationPermissionResult(new NotificationPermissionResult(NotificationPermissionResult.AuthorizationLevel.AUTHORIZED));
+        }
+    }
+
+    /// Registers a notification channel. No-op on platforms without channels.
+    public void registerNotificationChannel(NotificationChannelBuilder builder) {
+    }
+
+    /// Deletes a notification channel. No-op on platforms without channels.
+    public void deleteNotificationChannel(String channelId) {
+    }
+
+    /// Creates a notification channel group. No-op on platforms without channels.
+    public void createNotificationChannelGroup(String groupId, String groupName) {
+    }
+
+    /// Returns true if the platform can receive shared content from other apps.
+    public boolean isReceiveSharedContentSupported() {
+        return false;
+    }
+
+    /// Delivers shared content to the running application instance. onReceivedSharedContent
+    /// is defined on com.codename1.system.Lifecycle, so apps that handle shared content
+    /// extend Lifecycle; non-Lifecycle apps cannot override it and are skipped. The
+    /// dispatch is performed on the EDT.
+    public void fireSharedContentReceived(final SharedContent content) {
+        Object app = currentApplicationInstance;
+        if (content == null || !(app instanceof com.codename1.system.Lifecycle)) {
+            return;
+        }
+        Runnable r = new SharedContentDispatch((com.codename1.system.Lifecycle) app, content);
+        if (Display.getInstance().isEdt()) {
+            r.run();
+        } else {
+            Display.getInstance().callSerially(r);
+        }
+    }
+
+    private static final class SharedContentDispatch implements Runnable {
+        private final com.codename1.system.Lifecycle lifecycle;
+        private final SharedContent content;
+
+        SharedContentDispatch(com.codename1.system.Lifecycle lifecycle, SharedContent content) {
+            this.lifecycle = lifecycle;
+            this.content = content;
+        }
+
+        @Override
+        public void run() {
+            lifecycle.onReceivedSharedContent(content);
+        }
+    }
+
+    /// Returns true if the platform supports constraint-aware background work.
+    public boolean isBackgroundWorkSupported() {
+        return false;
+    }
+
+    /// Schedules constraint-aware background work. No-op when unsupported.
+    public void scheduleBackgroundWork(WorkRequest request) {
+    }
+
+    /// Cancels previously scheduled background work. No-op when unsupported.
+    public void cancelBackgroundWork(String workId) {
+    }
+
+    /// Returns true if the platform supports foreground services.
+    public boolean isForegroundServiceSupported() {
+        return false;
+    }
+
+    /// Starts a foreground service. The default implementation runs the task on a thread
+    /// without a system notification and returns null.
+    public Object startForegroundService(String channelId, String title, String body, String iconName, ForegroundService.Task task, ForegroundService handle) {
+        if (task != null) {
+            new Thread(new ForegroundServiceRunner(task, handle)).start();
+        }
+        return null;
+    }
+
+    private static final class ForegroundServiceRunner implements Runnable {
+        private final ForegroundService.Task task;
+        private final ForegroundService handle;
+
+        ForegroundServiceRunner(ForegroundService.Task task, ForegroundService handle) {
+            this.task = task;
+            this.handle = handle;
+        }
+
+        @Override
+        public void run() {
+            task.run(handle);
+        }
+    }
+
+    /// Updates the notification of a running foreground service. No-op by default.
+    public void updateForegroundServiceNotification(Object nativeHandle, String title, String body) {
+    }
+
+    /// Stops a running foreground service. No-op by default.
+    public void stopForegroundService(Object nativeHandle) {
+    }
+
+    /// Returns true if the platform supports deferrable background processing tasks.
+    public boolean isBackgroundProcessingSupported() {
+        return false;
+    }
+
+    /// Schedules a deferrable background processing task. No-op when unsupported.
+    public void scheduleBackgroundProcessing(String id, long earliestBeginEpochMs, boolean requiresNetwork, boolean requiresPower, Runnable task) {
+    }
+
+    /// Cancels a scheduled background processing task. No-op when unsupported.
+    public void cancelBackgroundProcessing(String id) {
+    }
+
+    /// Subscribes the device to a push topic. No-op when unsupported.
+    public void subscribeToPushTopic(String topic) {
+    }
+
+    /// Unsubscribes the device from a push topic. No-op when unsupported.
+    public void unsubscribeFromPushTopic(String topic) {
     }
 
     /// Gets the preferred time (in seconds) between background fetches.

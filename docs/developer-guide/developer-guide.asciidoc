@@ -71,11 +71,15 @@ include::io.asciidoc[]
 
 include::Push-Notifications.asciidoc[]
 
+include::Notifications-And-Background-Execution.asciidoc[]
+
 include::Miscellaneous-Features.asciidoc[]
 
 include::performance.asciidoc[]
 
 include::Testing-with-JUnit.adoc[]
+
+include::Advertising.asciidoc[]
 
 include::Monetization.asciidoc[]
 
@@ -113,6 +117,8 @@ include::On-Device-Debugging-Android.asciidoc[]
 include::Working-With-Javascript.asciidoc[]
 
 include::Working-with-Mac-OS-X.asciidoc[]
+
+include::Desktop-Integration.asciidoc[]
 
 include::Working-With-CodenameOne-Sources.asciidoc[]
 

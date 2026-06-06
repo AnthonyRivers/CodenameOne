@@ -110,6 +110,9 @@ public class Form extends Container {
     private Label title = new Label("", "Title");
     private MenuBar menuBar;
     private Component dragged;
+    // Last component whose interactive scrollbar showed a hover highlight, so the highlight can be
+    // cleared when the pointer moves to a different scrollable (desktop interactive scrollbars only)
+    private Component lastInteractiveScrollHover;
     private boolean enableCursors;
     private TextSelection textSelection;
     private ArrayList<Component> componentsAwaitingRelease;
@@ -842,6 +845,40 @@ public class Form extends Container {
         return titleArea;
     }
 
+    /// Returns the configured desktop title-bar mode ({@code native}, {@code custom} or
+    /// {@code toolbar}). Sourced from the implementation (desktop ports report the real mode;
+    /// everything else returns {@code toolbar}).
+    String getDesktopTitleBarMode() {
+        return Display.impl.getDesktopTitleBarMode();
+    }
+
+    /// Indicates that this form runs on the desktop in a title-bar mode that bridges the Toolbar's
+    /// commands to a native menu bar ({@code native} or {@code custom}). Inert (false) on mobile
+    /// because {@link Display#isDesktop()} is false and the theme constant is absent.
+    boolean isDesktopNativeChrome() {
+        if (!Display.getInstance().isDesktop()) {
+            return false;
+        }
+        String m = getDesktopTitleBarMode();
+        return "native".equals(m) || "custom".equals(m);
+    }
+
+    /// Indicates the {@code native} desktop title-bar mode, where the CN1 Toolbar is hidden entirely:
+    /// the form title goes into the real OS window title bar and the commands are bridged to a native
+    /// menu bar. Inert (false) on mobile.
+    boolean isDesktopHideToolbar() {
+        return Display.getInstance().isDesktop() && "native".equals(getDesktopTitleBarMode());
+    }
+
+    /// Indicates the {@code custom} desktop title-bar mode, where the CN1 Toolbar stays visible and
+    /// acts as the window's title bar: the OS window is undecorated (no native title area), the
+    /// Toolbar is the drag handle that moves the window, the window is resized by dragging its edges,
+    /// and the commands appear both in the native menu bar and in the Toolbar's side menu. Inert
+    /// (false) on mobile.
+    boolean isDesktopToolbarTitle() {
+        return Display.getInstance().isDesktop() && "custom".equals(getDesktopTitleBarMode());
+    }
+
     @Override
     public UIManager getUIManager() {
         if (uiManager != null) {
@@ -1123,20 +1160,10 @@ public class Form extends Container {
             int tx = g.getTranslateX();
             int ty = g.getTranslateY();
             g.translate(-tx, -ty);
-            Display.impl.beginPaintScope(g.getGraphics(), glassPane);
-            try {
-                glassPane.paint(g, getBounds());
-            } finally {
-                Display.impl.endPaintScope(g.getGraphics(), glassPane);
-            }
+            glassPane.paint(g, getBounds());
             g.translate(tx, ty);
         }
-        Display.impl.beginPaintScope(g.getGraphics(), this);
-        try {
-            paintGlass(g);
-        } finally {
-            Display.impl.endPaintScope(g.getGraphics(), this);
-        }
+        paintGlass(g);
         if (dragged != null && dragged.isDragAndDropInitialized()) {
             int[] c = g.getClip();
             g.setClip(0, 0, getWidth(), getHeight());
@@ -1978,6 +2005,11 @@ public class Form extends Container {
     public void setTitle(String title) {
         if (toolbar != null) {
             toolbar.setTitle(title);
+            // in desktop "native" mode the toolbar is hidden; push the title to the OS window title
+            // bar instead. In "custom" mode the (visible) toolbar shows the title itself.
+            if (isDesktopHideToolbar() && Display.getInstance().getCurrent() == this) { //NOPMD CompareObjectsWithEquals
+                Display.getInstance().refreshNativeTitle();
+            }
             return;
         }
 
@@ -2622,6 +2654,9 @@ public class Form extends Container {
         dragged = null;
         if (Display.getInstance().isNativeCommands()) {
             Display.impl.setNativeCommands(menuBar.getCommands());
+        } else if (isDesktopNativeChrome() && toolbar != null) {
+            // bridge the (hidden) toolbar's commands to the native desktop menu bar
+            Display.impl.setNativeCommands(toolbar.getAllNativeMenuCommands());
         }
         if (getParent() != null) {
             Form f = getParent().getComponentForm();
@@ -3770,6 +3805,7 @@ public class Form extends Container {
                     setFocused(cmp);
                 }
                 LeadUtil.pointerHover(cmp, x, y);
+                updateInteractiveScrollHover(cmp, x[0], y[0]);
             }
             if (TooltipManager.getInstance() != null) {
                 String tip = cmp.getTooltip();
@@ -3780,6 +3816,26 @@ public class Form extends Container {
                 }
             }
         }
+    }
+
+    /// Routes a hover to the nearest scrollable ancestor of the hovered component so an interactive
+    /// (desktop) scrollbar can highlight its thumb, and clears the highlight on the previously
+    /// hovered scrollable. Inert unless interactive scrollbars are enabled.
+    private void updateInteractiveScrollHover(Component cmp, int x, int y) {
+        if (!getUIManager().getLookAndFeel().isInteractiveScroll()) {
+            return;
+        }
+        Component scrollable = cmp;
+        while (scrollable != null && !scrollable.isScrollableY() && !scrollable.isScrollableX()) {
+            scrollable = scrollable.getParent();
+        }
+        if (lastInteractiveScrollHover != null && lastInteractiveScrollHover != scrollable) { //NOPMD CompareObjectsWithEquals
+            lastInteractiveScrollHover.clearInteractiveScrollHover();
+        }
+        if (scrollable != null) {
+            scrollable.updateInteractiveScrollHover(x, y);
+        }
+        lastInteractiveScrollHover = scrollable;
     }
 
     /// Returns true if there is only one focusable member in this form. This is useful

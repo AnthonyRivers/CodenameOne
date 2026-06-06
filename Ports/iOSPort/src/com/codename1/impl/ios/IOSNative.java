@@ -152,10 +152,24 @@ public final class IOSNative {
     native boolean isIOS7();
     native boolean isRunningOnMac();
 
+    // Mac native (Catalyst): set the host window title bar text from the current form title.
+    native void setWindowTitle(String title);
+
+    // Mac native (Catalyst): replace the application menu's CN1 command items. namesNewlineJoined
+    // holds the visible command labels separated by '\n'; selecting item i calls back into
+    // IOSImplementation.fireMacMenuCommand(i).
+    native void setNativeMenuCommands(String namesNewlineJoined);
+
     // Mac native: propagate the current form's brightness to the host
     // NSWindow's appearance so the Mac titlebar (rendered by AppKit, not
     // CN1) matches the app's dark/light theme. A no-op on iOS/iPadOS.
     native void setMacWindowDarkAppearance(boolean dark);
+
+    // Mac native (Catalyst): undecorate the host window for the "custom" desktop title-bar mode -
+    // hide the AppKit title bar (transparent + hidden title + full-size content view) so the CN1
+    // Toolbar acts as the window title bar, and make the window movable by its background so the
+    // toolbar drags it. Passing false restores the standard titled window. A no-op on iOS/iPadOS.
+    native void setMacWindowUndecorated(boolean undecorated);
     
     native void setImageName(long nativeImage, String name);
     
@@ -587,7 +601,7 @@ public final class IOSNative {
     public native int getVKBHeight();
     public native int getVKBWidth();
 
-    public native long connectSocket(String host, int port, int connectTimeout);    
+    public native long connectSocket(String host, int port, int connectTimeout);
     public native String getHostOrIP();
     public native void disconnectSocket(long socket);
     public native boolean isSocketConnected(long socket);
@@ -596,6 +610,14 @@ public final class IOSNative {
     public native int getSocketAvailableInput(long socket);
     public native byte[] readFromSocketStream(long socket);
     public native void writeToSocketStream(long socket, byte[] data);
+    public native void writeToSocketStream(long socket, byte[] data, int offset, int len);
+
+    public native long createWebSocketNative(int connectionId, String url);
+    public native void connectWebSocketNative(long handle, int connectTimeoutMs, String subprotocolsCsv);
+    public native void closeWebSocketNative(long handle);
+    public native void sendWebSocketTextNative(long handle, String text);
+    public native void sendWebSocketBinaryNative(long handle, byte[] data);
+    public native void releaseWebSocketNative(long handle);
 
     
     // Paths
@@ -708,7 +730,33 @@ public final class IOSNative {
     
     native void sendLocalNotification(String id, String alertTitle, String alertBody, String alertSound, int badgeNumber, long fireDate, int repeatType, boolean foreground);
 
+    /// Enriched local notification scheduling carrying actions, grouping, time-sensitive
+    /// flag and an image attachment. actionsEncoded packs the actions as
+    /// idtitleplaceholderbutton records separated by .
+    native void sendLocalNotification2(String id, String alertTitle, String alertBody, String alertSound, int badgeNumber, long fireDate, int repeatType, boolean foreground, String categoryId, String threadId, boolean timeSensitive, String imageAttachmentPath, String actionsEncoded);
+
     native void cancelLocalNotification(String id);
+
+    /// Requests notification authorization with the given UNAuthorizationOptions mask. The
+    /// result is delivered asynchronously to IOSImplementation.notificationPermissionResult.
+    native void requestNotificationPermission(int optionsMask);
+
+    /// Registers a BGTaskScheduler processing task identifier. Must be called before
+    /// application:didFinishLaunchingWithOptions: returns.
+    native void registerBackgroundProcessingTask(String identifier);
+
+    /// Submits a BGProcessingTaskRequest for the given identifier.
+    native void submitBackgroundProcessingTask(String identifier, double earliestBeginEpochSeconds, boolean requiresNetwork, boolean requiresPower);
+
+    /// Cancels a pending BGTaskScheduler request by identifier.
+    native void cancelBackgroundTask(String identifier);
+
+    /// True if BGTaskScheduler (iOS 13+) is available.
+    native boolean isBackgroundProcessingSupported();
+
+    /// Reads and clears any shared content payload written by the share extension into the
+    /// shared App Group user defaults. Returns a JSON string or null if there is none.
+    native String getPendingSharedContent(String appGroupId);
 
     // --- Biometrics (LocalAuthentication.framework) -------------------------
 
